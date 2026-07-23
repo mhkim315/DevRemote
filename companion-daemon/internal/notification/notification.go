@@ -228,6 +228,10 @@ type Notifier struct {
 
 	enabled bool
 
+	// Per-device singleflight: at most one dispatch goroutine per device.
+	// Prevents goroutine accumulation when PushSender hangs beyond timeout.
+	inFlight sync.Map // deviceID → bool
+
 	// lifecycle
 	mu      sync.Mutex
 	done    chan struct{}
@@ -291,6 +295,8 @@ func (n *Notifier) Start() {
 }
 
 // Stop terminates the consumer loop. Safe to call multiple times.
+// In-flight per-device goroutines are allowed to finish naturally
+// (or time out via their PushSender).
 func (n *Notifier) Stop() {
 	n.mu.Lock()
 	if n.stopped {
@@ -302,6 +308,17 @@ func (n *Notifier) Stop() {
 		close(n.done)
 	}
 	n.mu.Unlock()
+}
+
+// ActiveGoroutines returns the count of in-flight per-device dispatch
+// goroutines. For tests: verifies singleflight and Stop cleanup.
+func (n *Notifier) ActiveGoroutines() int {
+	count := 0
+	n.inFlight.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 // loop is the background consumer. It polls the Timeline writer on a 1-second
@@ -325,15 +342,17 @@ func (n *Notifier) loop() {
 // Delivery is at-most-once: dedup claims the event BEFORE send, so a send
 // failure does NOT retry the same locator.
 //
-// Each device is dispatched in a fire-and-forget goroutine with an individual
-// 10s timeout. A hung PushSender on one device never blocks delivery to
-// another device, and never blocks the next poll cycle — Dispatch() returns
-// immediately after launching goroutines.
+// Per-device singleflight prevents goroutine accumulation: if a dispatch is
+// already in-flight for a device, this cycle skips it. Each device goroutine
+// is fire-and-forget — Dispatch() returns immediately. PushSender
+// implementations are expected to carry their own timeout (e.g.
+// http.Client.Timeout); a hung Send blocks ONE goroutine per device at most.
 func (n *Notifier) dispatch() int {
 	n.mu.Lock()
 	enabled := n.enabled
+	stopped := n.stopped
 	n.mu.Unlock()
-	if !enabled || n.writer == nil || n.devices == nil {
+	if !enabled || stopped || n.writer == nil || n.devices == nil {
 		return 0
 	}
 
@@ -342,8 +361,18 @@ func (n *Notifier) dispatch() int {
 	deviceList, cursors := n.devices.Snapshot()
 	events := n.writer.ReadRecent(128)
 
+	var launched int
 	for _, dev := range deviceList {
+		// Singleflight: skip this device if a dispatch goroutine is already
+		// in-flight. At most one goroutine per device can be stuck on Send.
+		if _, loaded := n.inFlight.LoadOrStore(dev.DeviceID, true); loaded {
+			continue
+		}
+		launched++
+
 		go func(dev struct{ DeviceID, Token string }, c Cursor) {
+			defer n.inFlight.Delete(dev.DeviceID)
+
 			selected, wrapped := SelectSince(events, c)
 			// On wrap, deliver only the latest event to re-establish cursor.
 			// Blind replay of all retained events is prohibited.
@@ -362,18 +391,10 @@ func (n *Notifier) dispatch() int {
 				}
 				b, _ := json.Marshal(loc)
 				if n.sender != nil {
-					// Individual per-device timeout via a channel send.
-					// PushSender implementations (e.g. expoN1Sender) carry
-					// their own http.Client.Timeout; this is a safety net.
-					done := make(chan error, 1)
-					go func() { done <- n.sender.Send(dev.DeviceID, dev.Token, b) }()
-					var sendErr error
-					select {
-					case sendErr = <-done:
-					case <-time.After(10 * time.Second):
-						sendErr = fmt.Errorf("send timeout for device %s", dev.DeviceID)
-					}
-					if sendErr != nil {
+					// PushSender carries its own timeout (e.g. http.Client).
+					// No inner goroutine — if Send hangs, this goroutine
+					// is stuck, but singleflight caps it at one per device.
+					if err := n.sender.Send(dev.DeviceID, dev.Token, b); err != nil {
 						break // at-most-once: dedup already claimed, delivery dropped
 					}
 				}
@@ -385,7 +406,7 @@ func (n *Notifier) dispatch() int {
 			}
 		}(dev, cursors[dev.DeviceID])
 	}
-	return len(deviceList) // fire-and-forget: report launched, not delivered
+	return launched
 }
 
 // Dispatch is the synchronous one-shot version (for tests and manual trigger).

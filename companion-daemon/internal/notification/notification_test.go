@@ -153,6 +153,22 @@ func TestSelectSinceUsesPerDeviceCursorAndRecoversRingWrap(t *testing.T) {
 	if wrapped || len(selected) != len(events) {
 		t.Fatalf("empty cursor must return all: %#v, wrapped=%v", selected, wrapped)
 	}
+
+	// DeviceID present and cursor found → subset.
+	events2 := []contract.Envelope{
+		n1Event("a", 1, contract.EventApprovalRequested),
+		n1Event("b", 1, contract.EventApprovalRequested),
+	}
+	selected, wrapped = SelectSince(events2, Cursor{DeviceID: "d1", LastEventID: "a", LastGeneration: 1})
+	if wrapped || len(selected) != 1 || selected[0].EventID != "b" {
+		t.Fatalf("cursor with deviceID: %d events, wrapped=%v", len(selected), wrapped)
+	}
+
+	// Empty DeviceID with cursor values → fresh device → all events.
+	selected, wrapped = SelectSince(events2, Cursor{DeviceID: "", LastEventID: "a", LastGeneration: 1})
+	if wrapped || len(selected) != 2 {
+		t.Fatalf("empty DeviceID must return all events fresh: %d events", len(selected))
+	}
 }
 
 // ── V1 production tests (8) ──
@@ -339,21 +355,17 @@ func TestDeviceStorePerDeviceBindRevoke(t *testing.T) {
 	if len(seen) != 1 || seen[0] != "device-b" {
 		t.Errorf("ForEach saw %v want [device-b]", seen)
 	}
-}
 
-// TestDeviceRevokeClearsCursor verifies cursor is removed on revoke.
-func TestDeviceRevokeClearsCursor(t *testing.T) {
-	s := NewDeviceStore()
-	s.Bind("device-a", "token-a")
-	s.Cursor("device-a", Cursor{DeviceID: "device-a", LastEventID: "ev-5", LastGeneration: 3})
-
-	c := s.GetCursor("device-a")
+	// Cursor is cleared on revoke.
+	s2 := NewDeviceStore()
+	s2.Bind("device-x", "token-x")
+	s2.Cursor("device-x", Cursor{DeviceID: "device-x", LastEventID: "ev-5", LastGeneration: 3})
+	c := s2.GetCursor("device-x")
 	if c.LastEventID != "ev-5" {
 		t.Fatalf("cursor not stored: %+v", c)
 	}
-
-	s.Revoke("device-a")
-	c = s.GetCursor("device-a")
+	s2.Revoke("device-x")
+	c = s2.GetCursor("device-x")
 	if c.LastEventID != "" {
 		t.Errorf("cursor must be cleared on revoke: %+v", c)
 	}
@@ -643,25 +655,6 @@ func TestNotificationRestartRecovery(t *testing.T) {
 // TestSelectSinceUsesDeviceID verifies that the DeviceID field in Cursor
 // is propagated correctly and an empty DeviceID returns all events (fresh
 // device with no cursor).
-func TestSelectSinceUsesDeviceID(t *testing.T) {
-	events := []contract.Envelope{
-		n1Event("a", 1, contract.EventApprovalRequested),
-		n1Event("b", 1, contract.EventApprovalRequested),
-	}
-
-	// DeviceID present and cursor found → subset.
-	selected, wrapped := SelectSince(events, Cursor{DeviceID: "d1", LastEventID: "a", LastGeneration: 1})
-	if wrapped || len(selected) != 1 || selected[0].EventID != "b" {
-		t.Fatalf("cursor with deviceID: %d events, wrapped=%v", len(selected), wrapped)
-	}
-
-	// Empty DeviceID → fresh device → all events.
-	selected, wrapped = SelectSince(events, Cursor{DeviceID: "", LastEventID: "a", LastGeneration: 1})
-	if wrapped || len(selected) != 2 {
-		t.Fatalf("empty DeviceID must return all events fresh: %d events", len(selected))
-	}
-}
-
 // TestMobileTapSimulation verifies the end-to-end notification → re-auth
 // flow that a mobile device follows when tapping a notification.
 func TestMobileTapSimulation(t *testing.T) {
@@ -937,19 +930,18 @@ func TestDegradedWriterFIFO(t *testing.T) {
 	}
 }
 
-// TestHungSenderDoesNotBlockOtherDevices verifies steady-state resilience:
-// when one device's PushSender blocks across poll cycles, other devices
-// continue receiving NEW events. Dispatch() returns immediately (fire-and-
-// forget) so the next poll cycle launches fresh goroutines while the old
-// hung goroutine is still blocked.
-func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
+// TestPerDeviceSingleflight verifies that when a device's dispatch goroutine
+// is already in-flight, subsequent dispatch cycles skip it. Other devices
+// continue receiving events. After the first goroutine finishes, the next
+// cycle launches a fresh one.
+func TestPerDeviceSingleflight(t *testing.T) {
 	devices := NewDeviceStore()
 	devices.Bind("device-fast", "token-fast")
 	devices.Bind("device-slow", "token-slow")
 
 	var fastCount atomic.Int64
-	var slowEntered atomic.Bool
-	slowBlock := make(chan struct{}) // never closed — slow device hangs forever
+	var slowBlocked atomic.Bool
+	slowUnblock := make(chan struct{})
 
 	sender := &selectiveHangSender{
 		hangDevice: "device-slow",
@@ -958,70 +950,204 @@ func TestHungSenderDoesNotBlockOtherDevices(t *testing.T) {
 				fastCount.Add(1)
 			}
 			if deviceID == "device-slow" {
-				slowEntered.Store(true)
+				slowBlocked.Store(true)
 			}
 		},
-		slowBlock: slowBlock,
+		slowUnblock: slowUnblock,
 	}
 
 	var gen atomic.Int64
 	gen.Store(1)
-
 	w := openTestWriter(t)
-
 	notifier := NewNotifier(w, devices, func(sid string) int64 { return gen.Load() }, sender)
 	notifier.SetEnabled(true)
 
-	// ---- Poll 1: both devices get event-1. slow blocks. ----
-	ev1 := validEnvelope("steady-1", "session-1", 1, contract.EventApprovalRequested)
-	if !w.Append(ev1) {
-		t.Fatal("Append ev1 failed")
-	}
-	notifier.Dispatch() // fire-and-forget; returns immediately
+	// Event-1: both devices start dispatch, slow blocks on Send.
+	w.Append(validEnvelope("sf-1", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
 
-	// Wait for fast to receive event-1 and slow to enter its Send.
-	deadline := time.After(2 * time.Second)
-	for fastCount.Load() < 1 || !slowEntered.Load() {
+	// Wait for fast to receive and slow to enter its Send.
+	for fastCount.Load() < 1 || !slowBlocked.Load() {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Singleflight: slow still blocked → next dispatch skips slow.
+	launched := notifier.Dispatch()
+	if launched > 1 {
+		t.Errorf("singleflight: launched=%d want at most 1 (slow should be skipped)", launched)
+	}
+
+	// Event-2: fast receives it, slow skipped.
+	w.Append(validEnvelope("sf-2", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
+	time.Sleep(200 * time.Millisecond)
+	if fastCount.Load() < 2 {
+		t.Errorf("fast should receive 2 events: got %d", fastCount.Load())
+	}
+
+	// Unblock slow and verify it eventually finishes.
+	close(slowUnblock)
+	deadline := time.After(3 * time.Second)
+	for notifier.ActiveGoroutines() > 0 {
 		select {
 		case <-deadline:
-			t.Fatalf("timeout: fastSent=%d slowEntered=%v", fastCount.Load(), slowEntered.Load())
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-
-	// ---- Poll 2: append a second event WHILE slow is still hung. ----
-	// Fast device must receive event-2 in the next dispatch cycle.
-	ev2 := validEnvelope("steady-2", "session-1", 1, contract.EventApprovalRequested)
-	if !w.Append(ev2) {
-		t.Fatal("Append ev2 failed")
-	}
-
-	// Start polling for fast to receive event-2.
-	deadline2 := time.After(3 * time.Second)
-	for fastCount.Load() < 2 {
-		notifier.Dispatch() // each call launches fresh goroutines
-		select {
-		case <-deadline2:
-			t.Fatalf("steady-state failed: fastSent=%d want >=2 (slow still hung)", fastCount.Load())
+			t.Fatalf("slow goroutine did not finish: active=%d", notifier.ActiveGoroutines())
 		default:
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
+}
 
-	if fastCount.Load() < 2 {
-		t.Errorf("fast device should receive 2 events while slow hung: got %d", fastCount.Load())
+// TestSameDeviceOrderingAndMonotonicCursor verifies events are delivered in
+// order and the cursor only advances forward (monotonic).
+func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+
+	var delivered []string
+	var mu sync.Mutex
+	sender := &recordingSender{
+		onSend: func(deviceID string, loc Locator) {
+			mu.Lock()
+			delivered = append(delivered, loc.EventID)
+			mu.Unlock()
+		},
 	}
-	if !slowEntered.Load() {
-		t.Error("slow device was never invoked")
+
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
+	notifier.SetEnabled(true)
+
+	// Write events in order: a, b, c.
+	evA := validEnvelope("seq-a", "session-1", 1, contract.EventApprovalRequested)
+	evB := validEnvelope("seq-b", "session-1", 1, contract.EventApprovalRequested)
+	evC := validEnvelope("seq-c", "session-1", 1, contract.EventApprovalRequested)
+	w.Append(evA)
+	w.Append(evB)
+	w.Append(evC)
+
+	notifier.Dispatch()
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	ids := make([]string, len(delivered))
+	copy(ids, delivered)
+	mu.Unlock()
+
+	if len(ids) != 3 {
+		t.Fatalf("delivered %d events want 3: %v", len(ids), ids)
 	}
+	if ids[0] != evA.EventID || ids[1] != evB.EventID || ids[2] != evC.EventID {
+		t.Errorf("ordering violated: got %v", ids)
+	}
+
+	// Cursor must now point to event-c (last delivered).
+	c := devices.GetCursor("device-1")
+	if c.LastEventID != evC.EventID {
+		t.Errorf("cursor not advanced: %+v", c)
+	}
+
+	// Double-check monotonic: dispatch again, nothing delivered.
+	before := len(delivered)
+	notifier.Dispatch()
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	after := len(delivered)
+	mu.Unlock()
+	if after != before {
+		t.Errorf("cursor should prevent re-delivery: before=%d after=%d", before, after)
+	}
+}
+
+// TestStopRevokeCleanup verifies that after Stop, no new goroutines launch,
+// and after Revoke, the device is skipped in dispatch (no goroutine).
+func TestStopRevokeCleanup(t *testing.T) {
+	devices := NewDeviceStore()
+	devices.Bind("device-1", "token-1")
+
+	sender := &stubSender{sent: make(chan struct{}, 16)}
+	w := openTestWriter(t)
+	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, sender)
+	notifier.SetEnabled(true)
+
+	w.Append(validEnvelope("stop-1", "session-1", 1, contract.EventApprovalRequested))
+	notifier.Dispatch()
+	sender.waitForLocators(t, 1, 2*time.Second)
+
+	// Stop the notifier.
+	notifier.Stop()
+
+	// After Stop, dispatch should be a no-op (returns 0).
+	launched := notifier.Dispatch()
+	if launched != 0 {
+		t.Errorf("stopped notifier launched %d goroutines, want 0", launched)
+	}
+	if notifier.ActiveGoroutines() != 0 {
+		t.Errorf("active goroutines after Stop: %d want 0", notifier.ActiveGoroutines())
+	}
+
+	// ---- Revoke test: new notifier, revoke device mid-flight. ----
+	devices2 := NewDeviceStore()
+	devices2.Bind("device-a", "token-a")
+	devices2.Bind("device-b", "token-b")
+
+	blockB := make(chan struct{})
+	var aCount atomic.Int64
+	hangSender := &selectiveHangSender{
+		hangDevice: "device-b",
+		onSend: func(id string) {
+			if id == "device-a" {
+				aCount.Add(1)
+			}
+		},
+		slowUnblock: blockB,
+	}
+
+	w2 := openTestWriter(t)
+	n2 := NewNotifier(w2, devices2, func(sid string) int64 { return 1 }, hangSender)
+	n2.SetEnabled(true)
+
+	w2.Append(validEnvelope("revoke-1", "session-1", 1, contract.EventApprovalRequested))
+	n2.Dispatch()
+
+	// Wait for device-a to receive its event.
+	for aCount.Load() < 1 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Revoke device-b. Its push token and cursor are cleared.
+	devices2.Revoke("device-b")
+
+	// Next dispatch: device-b has no token → not in Snapshot → skipped.
+	launched2 := n2.Dispatch()
+	if launched2 > 1 {
+		t.Errorf("after revoke: launched=%d want at most 1 (revoked device skipped)", launched2)
+	}
+
+	// Cleanup.
+	close(blockB)
+	n2.Stop()
+}
+
+// recordingSender records Locator deliveries for ordering tests.
+type recordingSender struct {
+	onSend func(deviceID string, loc Locator)
+}
+
+func (s *recordingSender) Send(deviceID, pushToken string, payload []byte) error {
+	var loc Locator
+	json.Unmarshal(payload, &loc)
+	if s.onSend != nil {
+		s.onSend(deviceID, loc)
+	}
+	return nil
 }
 
 // selectiveHangSender blocks on a specific deviceID until signalled.
 type selectiveHangSender struct {
-	hangDevice string
-	onSend     func(deviceID string)
-	slowBlock  chan struct{}
+	hangDevice  string
+	onSend      func(deviceID string)
+	slowUnblock chan struct{}
 }
 
 func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) error {
@@ -1029,8 +1155,8 @@ func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) e
 		s.onSend(deviceID)
 	}
 	if deviceID == s.hangDevice {
-		// Simulate hung Expo push — blocks forever (channel never closed).
-		<-s.slowBlock
+		// Simulate hung push — blocks until unblocked.
+		<-s.slowUnblock
 		return fmt.Errorf("expo push timeout")
 	}
 	return nil
