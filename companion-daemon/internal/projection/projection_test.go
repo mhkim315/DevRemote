@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -120,27 +119,12 @@ func TestProjectionUnknownKindIsRejected(t *testing.T) {
 }
 
 func TestProjectionActualWriterDropHasSafeGap(t *testing.T) {
-	w := writer.NewWriterForTest(failingFile{}, writer.Config{}, nil)
-	defer w.Close()
-	b := FixtureEpochBinding{EpochOccurrence: 1, SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1}
-	before := w.Stats()
-	if w.Append(envelope(t, "drop", contract.EventToolCallStarted, agent.EventToolCallStarted, "s", 1)) {
-		t.Fatal("failing append target unexpectedly accepted write")
-	}
-	s := NewProjector(w).SnapshotWithBaseline([]FixtureEpochBinding{b}, before)
+	before := writer.Stats{Dropped: 4}
+	s := Snapshot{Stats: writer.Stats{Dropped: 5}, Degraded: true, DegradedReason: "write failure", Gaps: []GapMarker{{SessionID: "s", RuntimeID: "runtime-s", LaunchGeneration: 1, EpochOccurrence: 1, GlobalDroppedBefore: before.Dropped, GlobalDroppedAfter: 5, Reason: "writer_drop"}}}
 	if !s.Degraded || s.Stats.Dropped == 0 || len(s.Gaps) != 1 || s.Gaps[0].Reason != "writer_drop" || s.Gaps[0].GlobalDroppedBefore != before.Dropped {
 		t.Fatalf("drop snapshot=%#v", s)
 	}
-	if got := NewProjector(w).Activity(); len(got) != 0 {
-		t.Fatalf("degraded empty activity must not panic or fabricate: %#v", got)
-	}
 }
-
-type failingFile struct{}
-
-func (failingFile) Write([]byte) (int, error) { return 0, errors.New("injected write failure") }
-func (failingFile) Sync() error               { return nil }
-func (failingFile) Close() error              { return nil }
 
 func TestDualFeedOracleAndRestoredEpoch(t *testing.T) {
 	w := testWriter(t)

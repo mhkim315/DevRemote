@@ -135,14 +135,14 @@ func (p *Projector) SnapshotWithBaseline(bindings []FixtureEpochBinding, before 
 	// overwrite observable without falsely calling it Writer.Dropped.
 	if stats.Appended > uint64(len(envs)) {
 		out.RingOverwritten = stats.Appended - uint64(len(envs))
-		if marker, ok := scopedMarker(bindings, "ring_overwrite", before, stats, reason, int64(len(out.Activity))); ok {
+		if marker, ok := scopedMarker(bindings, "ring_overwrite", before, stats, reason, int64(len(out.Activity)), envs); ok {
 			out.Gaps = append(out.Gaps, marker)
 		} else {
 			out.Unexplained++
 		}
 	}
 	if degraded && stats.Dropped > 0 {
-		if marker, ok := scopedMarker(bindings, "writer_drop", before, stats, reason, int64(len(out.Activity))); ok {
+		if marker, ok := scopedMarker(bindings, "writer_drop", before, stats, reason, int64(len(out.Activity)), envs); ok {
 			out.Gaps = append(out.Gaps, marker)
 		} else {
 			out.Unexplained++
@@ -151,12 +151,19 @@ func (p *Projector) SnapshotWithBaseline(bindings []FixtureEpochBinding, before 
 	return out
 }
 
-func scopedMarker(bindings []FixtureEpochBinding, reason string, before, stats writer.Stats, degradedReason string, order int64) (GapMarker, bool) {
+func scopedMarker(bindings []FixtureEpochBinding, reason string, before, stats writer.Stats, degradedReason string, order int64, envs []contract.Envelope) (GapMarker, bool) {
 	if len(bindings) != 1 {
 		return GapMarker{}, false
 	}
 	b := bindings[0]
-	return GapMarker{SessionID: b.SessionID, RuntimeID: b.RuntimeID, LaunchGeneration: b.LaunchGeneration, EpochOccurrence: b.EpochOccurrence, GlobalDroppedBefore: before.Dropped, GlobalDroppedAfter: stats.Dropped, DegradedReason: degradedReason, Reason: reason, ProjectionOrder: order}, true
+	source := ""
+	for _, e := range envs {
+		if e.SessionID == b.SessionID && e.RuntimeID == b.RuntimeID && e.LaunchGeneration == b.LaunchGeneration {
+			source = e.SourceIncarnation
+			break
+		}
+	}
+	return GapMarker{SessionID: b.SessionID, RuntimeID: b.RuntimeID, LaunchGeneration: b.LaunchGeneration, EpochOccurrence: b.EpochOccurrence, SourceIncarnation: source, GlobalDroppedBefore: before.Dropped, GlobalDroppedAfter: stats.Dropped, DegradedReason: degradedReason, Reason: reason, ProjectionOrder: order}, true
 }
 
 func activity(env contract.Envelope, order int64) ActivityItem {
@@ -277,6 +284,13 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			r.ToleratedLosses++
 		}
 	}
+	for _, s := range response.Fallback {
+		if s.Kind == transcript.KindDegraded {
+			degraded = append(degraded, s)
+		} else {
+			r.ToleratedLosses++
+		}
+	}
 	items := snap.Transcript
 	if binding != nil {
 		if duplicateBinding(*binding, bindings) {
@@ -289,6 +303,11 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			}
 		}
 		items = filtered
+	}
+	for _, s := range degraded {
+		if !hasGapForSegment(snap.Gaps, s) {
+			r.Unexplained++
+		}
 	}
 	r.ComparedSessions = boolInt(response.SessionID != "")
 	n := len(segments)
@@ -324,6 +343,12 @@ func Compare(response transcript.TranscriptResponse, snap Snapshot, bindings []F
 			r.Unexplained++
 		}
 	}
+	if err := ValidatePairOrder(items); err != nil {
+		r.Unexplained++
+	}
+	if err := validateTranscriptPairOrder(segments); err != nil {
+		r.Unexplained++
+	}
 	r.Passed = r.OrderingDivergences == 0 && r.Collisions == 0 && r.Extras == 0 && r.Missings == 0 && r.GenerationMismatches == 0 && r.MisboundApprovals == 0 && r.Unexplained == 0
 	return r
 }
@@ -340,6 +365,14 @@ func duplicateBinding(b FixtureEpochBinding, bs []FixtureEpochBinding) bool {
 func hasTranscriptGap(segs []transcript.TranscriptSegment, gap GapMarker) bool {
 	for _, s := range segs {
 		if s.SessionID == gap.SessionID && s.DegradedReason == gap.Reason {
+			return true
+		}
+	}
+	return false
+}
+func hasGapForSegment(gaps []GapMarker, s transcript.TranscriptSegment) bool {
+	for _, g := range gaps {
+		if g.SessionID == s.SessionID && g.Reason == s.DegradedReason {
 			return true
 		}
 	}
@@ -383,13 +416,29 @@ func ValidatePairOrder(items []TranscriptItem) error {
 			if it.PairID == "" || !seenTool[it.PairID] {
 				return fmt.Errorf("tool finish before start: %s", it.PairID)
 			}
+			delete(seenTool, it.PairID)
 		case "approval_requested":
 			seenApproval[it.PairID] = true
 		case "approval_resolved":
 			if it.PairID == "" || !seenApproval[it.PairID] {
 				return fmt.Errorf("approval resolution before request")
 			}
+			delete(seenApproval, it.PairID)
 		}
+	}
+	if len(seenTool) != 0 || len(seenApproval) != 0 {
+		return fmt.Errorf("unresolved lifecycle pair")
+	}
+	return nil
+}
+
+func validateTranscriptPairOrder(segs []transcript.TranscriptSegment) error {
+	last := int64(-1)
+	for _, s := range segs {
+		if s.Seq <= last {
+			return fmt.Errorf("transcript sequence reordered")
+		}
+		last = s.Seq
 	}
 	return nil
 }
