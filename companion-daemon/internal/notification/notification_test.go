@@ -1021,6 +1021,60 @@ func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
 	if after != before {
 		t.Errorf("cursor should prevent re-delivery: before=%d after=%d", before, after)
 	}
+
+	// At-most-once partial failure: cursor advances to last SUCCESS only.
+	// event4 succeeds, event5 fails → cursor = event4 position, NOT event5.
+	devices2 := NewDeviceStore()
+	devices2.Bind("device-2", "token-2")
+	failSender := &failAfterNSender{failAfter: 1}
+	w2 := openTestWriter(t)
+	n2 := NewNotifier(w2, devices2, func(sid string) int64 { return 1 }, failSender)
+	n2.SetEnabled(true)
+
+	ev4 := validEnvelope("seq-d", "session-2", 1, contract.EventApprovalRequested)
+	ev5 := validEnvelope("seq-e", "session-2", 1, contract.EventApprovalRequested)
+	w2.Append(ev4)
+	w2.Append(ev5)
+
+	n2.Dispatch()
+	time.Sleep(300 * time.Millisecond)
+
+	failSender.mu.Lock()
+	sentCount := len(failSender.sent)
+	failSender.mu.Unlock()
+	if sentCount != 1 {
+		t.Fatalf("partial failure: sent %d events, want 1", sentCount)
+	}
+
+	c2 := devices2.GetCursor("device-2")
+	if c2.LastEventID != ev4.EventID {
+		t.Errorf("cursor after partial failure: got %q want %q (last success)", c2.LastEventID, ev4.EventID)
+	}
+	if c2.LastEventID == ev5.EventID {
+		t.Error("cursor must NOT be the failed event")
+	}
+	n2.Stop()
+}
+
+// failAfterNSender succeeds for the first N calls, then returns an error.
+type failAfterNSender struct {
+	mu        sync.Mutex
+	count     int
+	failAfter int
+	sent      []Locator
+}
+
+func (s *failAfterNSender) Send(deviceID, pushToken string, payload []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.count++
+	if s.count > s.failAfter {
+		return fmt.Errorf("injected send failure after %d successes", s.failAfter)
+	}
+	var loc Locator
+	json.Unmarshal(payload, &loc)
+	s.sent = append(s.sent, loc)
+	return nil
 }
 
 // TestStopCursorNotWritten verifies Stop concurrency: when a Send is
@@ -1162,3 +1216,9 @@ func TestOldSendVsRevokeRebind(t *testing.T) {
 
 	notifier.Stop()
 }
+
+// TestCursorAdvancesToLastSuccessOnPartialFailure verifies at-most-once
+// cursor semantics: in the same batch, when event1 succeeds and event2
+// fails, the cursor advances to event1 (the last successful position),
+// NOT to the failed event2. Dedup consumes the failed event, so it is
+// never retried.
