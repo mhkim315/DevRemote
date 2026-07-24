@@ -80,12 +80,8 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		return "", fmt.Errorf("no V1 launcher")
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
-	// Retire the exact prior generation BEFORE reserving a new one.
-	// This must happen before AuthorizeAndCommit so a blocked slow create
-	// does not finalize a faster winner that already published.
-	if previous, ok := o.currentGeneration(canonicalID); ok {
-		o.finalize(canonicalID, previous)
-	}
+	// 9.4-D: AuthorizeAndCommit FIRST — never mutate existing entry before
+	// authorization. The commit callback reserves a generation under o.mu.
 	var reservedGen int64
 	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
 		o.mu.Lock()
@@ -97,9 +93,9 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	}); err != nil {
 		return "", err
 	}
+	// I/O: spawn child process outside any lock.
 	result, err := o.v1Spawn.Spawn(ctx, cfg)
 	if err != nil {
-		// Bug 2 fix: only delete own reservation.
 		o.mu.Lock()
 		if o.pending[canonicalID] == reservedGen {
 			delete(o.pending, canonicalID)
@@ -128,7 +124,8 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		o.mu.Unlock()
 		return "", fmt.Errorf("V1 handle does not expose a PTY stream")
 	}
-	// Publish only if our reservation is still current.
+	// Publish only if our reservation is still current. Under o.mu:
+	// atomically capture old entry, install new, then clean old outside lock.
 	o.mu.Lock()
 	if o.pending[canonicalID] != reservedGen {
 		o.mu.Unlock()
@@ -136,12 +133,25 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		return "", fmt.Errorf("create reservation overtaken")
 	}
 	delete(o.pending, canonicalID)
+	old := o.entries[canonicalID]
 	ps := &handleStream{PTYHandle: result.Handle, reader: stream}
 	rec := StartRecorderUnconditional(canonicalID, ps)
 	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec, o.authorizer)
 	cleanup := func(c context.Context) CleanupOutcome { return result.ProcessCleanup.Execute(c) }
 	gen := o.registerGenLocked(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec, reservedGen)
 	o.mu.Unlock()
+	// Clean old entry outside lock. Use the captured old pointer directly.
+	if old != nil {
+		if old.transport != nil {
+			old.transport.Retire()
+		}
+		old.State = LifecycleExited
+		now := o.now()
+		old.EndedAt = &now
+		if old.cleanup != nil {
+			old.cleanup(ctx)
+		}
+	}
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
