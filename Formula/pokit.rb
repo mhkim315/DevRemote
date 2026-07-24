@@ -3,7 +3,7 @@ class Pokit < Formula
   homepage "https://github.com/mhkim315/DevRemote"
   url "https://github.com/mhkim315/DevRemote/archive/5632868c640fc7249414440b9d30102d6633dab1.tar.gz"
   version "0.0.1-dev-build10"
-  sha256 "REPLACE_WITH_SHA256_OF_5632868c6_ARCHIVE"
+  sha256 "c2ff2de98b8e109b2370ed95addec46cf0741cf5bd8fb4ead985f313117a1490"
   license "MIT"
 
   depends_on "go" => :build
