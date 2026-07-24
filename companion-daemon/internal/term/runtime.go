@@ -50,6 +50,9 @@ type Handlers struct {
 	// EnableManagedClaude). REST reads managed Claude rows/status DIRECTLY from
 	// its owned registry.
 	ManagedClaude *ManagedClaudeService
+	// DS-CL2: interactive Claude host (PTY + hooks + JSONL). nil unless
+	// EnableClaudeInteractive.
+	ClaudeInteractive *ClaudeInteractiveHost
 }
 
 // NewHandlers constructs the HTTP mutation surface with its mandatory

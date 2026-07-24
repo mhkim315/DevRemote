@@ -63,6 +63,36 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 
+	// DS-CL2: route claude profile to the interactive host when enabled.
+	// This creates a controlled_pty:* session with PTY + hooks + JSONL.
+	if req.ProfileID == "claude" && h.ClaudeInteractive != nil {
+		cwd := req.CWD
+		if cwd == "" {
+			cwd = "/"
+		}
+		p := devicetrust.PrincipalFromContext(r.Context())
+		var deviceID string
+		var deviceEpoch uint64
+		if p != nil {
+			deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+		}
+		id, err := h.ClaudeInteractive.Create(r.Context(), cwd, deviceID, deviceEpoch)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(SessionLifecycle{Adapter: "controlled_pty", ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
+			return
+		}
+		writeLifecycle(w, SessionLifecycle{
+			ID:        id,
+			Adapter:   "controlled_pty",
+			ProfileID: req.ProfileID,
+			Name:      req.Name,
+			State:     LifecycleRunning,
+		})
+		return
+	}
+
 	// C1D: route claude profile to the managed Claude service when enabled.
 	// Uses canonical claude_headless adapter identity, not controlled_pty.
 	if req.ProfileID == "claude" && h.ManagedClaude != nil {

@@ -414,6 +414,23 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managedClaude.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed claude approval store: %w", err)
 		}
+		// R4: wire Codex managed events into the common Transcript projection.
+		managed.SetTranscriptService(transcriptSvc)
+	}
+
+	// DS-CL2: interactive Claude host (PTY + hooks + JSONL).
+	claudeInteractive, err := term.NewClaudeInteractiveHost(
+		term.ClaudeInteractiveConfig{
+			Bin:              "claude",
+			Version:          term.CertifiedClaudeVersion,
+			AuthorityVersion: term.CertifiedClaudeVersion,
+		},
+		ownedPTY,
+		transcriptSvc,
+		authorizer,
+	)
+	if err != nil {
+		log.Printf("WARNING: Claude interactive host disabled: %v", err)
 	}
 
 	// Timeline producer authorization and runtime verification are separate
@@ -504,6 +521,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	h.Audit = audit
 	h.Managed = managed
 	h.ManagedClaude = managedClaude
+	if claudeInteractive != nil {
+		h.ClaudeInteractive = claudeInteractive
+	}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
 	// registered and the gate accepts nothing (returns `unavailable`, writes no
