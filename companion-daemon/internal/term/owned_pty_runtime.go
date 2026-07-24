@@ -395,6 +395,50 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 		}
 	}
 }
+// DS-ARB4: Interrupt sends SIGINT to the PTY process group. Requires
+// interrupt permission but NOT input-writer ownership. Idempotent.
+func (o *OwnedPTYRuntime) Interrupt(id string, deviceID string, deviceEpoch uint64) error {
+	g, ok := o.currentGeneration(id)
+	if !ok {
+		return ErrLifecycleNotFound
+	}
+	l := o.lockFor(id)
+	l.Lock()
+	err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionStop, func() error {
+		o.mu.Lock()
+		e, ok := o.entries[id]
+		o.mu.Unlock()
+		if !ok || e.Generation != g {
+			return ErrLifecycleStaleGeneration
+		}
+		if e.State.Terminal() {
+			return nil // idempotent
+		}
+		return nil
+	})
+	l.Unlock()
+	if err != nil {
+		return err
+	}
+	o.mu.Lock()
+	e, ok := o.entries[id]
+	o.mu.Unlock()
+	if !ok || e.Generation != g {
+		return ErrLifecycleStaleGeneration
+	}
+	if e.State.Terminal() {
+		return nil // idempotent
+	}
+	if e.handle == nil {
+		return nil
+	}
+	outcome := e.handle.Signal(syscall.SIGINT)
+	if outcome.Err != nil {
+		return outcome.Err
+	}
+	return nil
+}
+
 func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	l := o.lockFor(id)
 	l.Lock()

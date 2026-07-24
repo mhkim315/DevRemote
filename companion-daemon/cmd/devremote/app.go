@@ -772,6 +772,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		serveMux.HandleFunc("POST /api/sessions/{id}/kill", h.AuthMiddleware(h.HandleSessionKill))
 		serveMux.HandleFunc("DELETE /api/sessions/{id}", h.AuthMiddleware(h.HandleSessionDelete))
 			serveMux.HandleFunc("POST /api/sessions/{id}/claim-input", h.AuthMiddleware(h.HandleClaimInput))
+		serveMux.HandleFunc("POST /api/sessions/{id}/interrupt", h.AuthMiddleware(h.HandleSessionInterrupt))
 		serveMux.HandleFunc("GET /api/session-profiles", h.AuthMiddleware(term.HandleSessionProfiles))
 		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}", h.AuthMiddleware(h.HandleApprovalAction))
 		serveMux.HandleFunc("GET /api/sessions/{id}/native-status", h.AuthMiddleware(h.HandleManagedNativeStatus))
@@ -816,6 +817,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionDelete, devicetrust.PermHistoryDelete))
 			serveMux.HandleFunc("POST /api/sessions/{id}/claim-input",
 				devicetrust.RequirePrincipal(sessionMgr, h.HandleClaimInput, devicetrust.PermTerminalInput))
+		serveMux.HandleFunc("POST /api/sessions/{id}/interrupt",
+			devicetrust.RequirePrincipal(sessionMgr, h.HandleSessionInterrupt, devicetrust.PermSessionsStop))
 		serveMux.HandleFunc("GET /api/session-profiles",
 			devicetrust.RequirePrincipal(sessionMgr, term.HandleSessionProfiles, devicetrust.PermSessionsRead))
 		serveMux.HandleFunc("POST /api/sessions/{id}/approvals/{approvalId}",

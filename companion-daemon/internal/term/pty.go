@@ -1107,3 +1107,52 @@ func (h *Handlers) HandleClaimInput(w http.ResponseWriter, r *http.Request) {
 		"inputOwner": owner,
 	})
 }
+
+// DS-ARB4: HandleSessionInterrupt sends SIGINT to the PTY process group.
+// This is a separate lifecycle mutation from Ctrl+C (which requires input-writer
+// ownership). Interrupt requires interrupt permission and exact generation,
+// but NOT input-writer ownership. Duplicate attempts are idempotent.
+//
+// POST /api/sessions/{id}/interrupt
+func (h *Handlers) HandleSessionInterrupt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	session := r.PathValue("id")
+	if session == "" {
+		http.Error(w, "session id required", http.StatusBadRequest)
+		return
+	}
+	ref := sessionid.ParseSessionID(session)
+	if ref.Adapter != "controlled_pty" {
+		http.Error(w, "interrupt is only supported for interactive terminal sessions", http.StatusBadRequest)
+		return
+	}
+	if h.Lifecycle == nil || h.Lifecycle.OwnedPTY() == nil {
+		http.Error(w, "terminal runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	transport, ok := h.Lifecycle.OwnedPTY().Transport(session)
+	if !ok || transport == nil || transport.IsRetired() {
+		http.Error(w, "session not found or ended", http.StatusNotFound)
+		return
+	}
+	p := devicetrust.PrincipalFromContext(r.Context())
+	var deviceID string
+	var deviceEpoch uint64
+	if p != nil {
+		deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+	}
+	if err := h.authorizePrincipal(p, devicetrust.IntentSessionStop); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err := h.Lifecycle.OwnedPTY().Interrupt(session, deviceID, deviceEpoch); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"interrupted"}`))
+}
