@@ -1033,7 +1033,12 @@ func (s *ManagedCodexService) create(cwd string, certification bool, deviceID st
 		s.mu.Unlock()
 		return "", fmt.Errorf("managed codex service is shutting down")
 	}
-	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error { return nil }); err != nil {
+	var epoch int64
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
+		s.gen++
+		epoch = s.gen
+		return nil
+	}); err != nil {
 		s.mu.Unlock()
 		return "", err
 	}
@@ -1063,8 +1068,6 @@ func (s *ManagedCodexService) create(cwd string, certification bool, deviceID st
 		_ = proc.Wait()
 		return "", fmt.Errorf("managed codex service is shutting down")
 	}
-	s.gen++
-	epoch := s.gen
 	rt := newCodexManagedRuntime(s.authorizer, proc, epoch, s.reg)
 	rt.sessionID = id
 	rt.runtimeID = proc.OpaqueID()

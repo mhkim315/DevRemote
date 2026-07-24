@@ -78,7 +78,12 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	if o.v1Spawn == nil {
 		return "", fmt.Errorf("no V1 launcher")
 	}
-	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error { return nil }); err != nil {
+	var reservedGen int64
+	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
+		o.nextGen++
+		reservedGen = o.nextGen
+		return nil
+	}); err != nil {
 		return "", err
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
@@ -107,7 +112,7 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	rec := StartRecorderUnconditional(canonicalID, ps)
 	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec, o.authorizer)
 	cleanup := func(c context.Context) CleanupOutcome { return result.ProcessCleanup.Execute(c) }
-	gen := o.register(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec)
+	gen := o.registerGen(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec, reservedGen)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
@@ -131,9 +136,16 @@ func (s *handleStream) GetSize() (int, int, error) {
 }
 
 func (o *OwnedPTYRuntime) register(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder) int64 {
+	return o.registerGen(id, profileID, name, handle, identity, cleanup, transport, rec, 0)
+}
+func (o *OwnedPTYRuntime) registerGen(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, reservedGen int64) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.nextGen++
+	if reservedGen > 0 {
+		o.nextGen = reservedGen
+	} else {
+		o.nextGen++
+	}
 	g := o.nextGen
 	if old := o.entries[id]; old != nil && old.transport != nil {
 		old.transport.Retire()

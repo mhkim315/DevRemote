@@ -310,11 +310,11 @@ type claudeResumeCoordinator struct {
 	closed     bool
 }
 
-func (c *claudeResumeCoordinator) authorizeEntryLocked(entry *resumeEntry, intent devicetrust.MutationIntent) bool {
+func (c *claudeResumeCoordinator) authorizeEntryLocked(entry *resumeEntry, intent devicetrust.MutationIntent, commit func() error) bool {
 	if entry == nil || c.authorizer == nil {
 		return false
 	}
-	return c.authorizer.AuthorizeAndCommit(entry.deviceID, entry.deviceEpoch, intent, func() error { return nil }) == nil
+	return c.authorizer.AuthorizeAndCommit(entry.deviceID, entry.deviceEpoch, intent, commit) == nil
 }
 
 // NewClaudeResumeCoordinator creates an empty coordinator.
@@ -479,14 +479,16 @@ func (c *claudeResumeCoordinator) BindResumeProcess(claimToken, resumeNonce stri
 	if !ok || entry.resumeNonce != resumeNonce || entry.state != stateDecisionReserved {
 		return false
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalResume) {
-		return false
-	}
 	// R4: exactly-once. Reject if already bound.
 	if entry.expectedLaunchGen != 0 {
 		return false
 	}
-	entry.expectedLaunchGen = launchGen
+	if c.authorizer.AuthorizeAndCommit(entry.deviceID, entry.deviceEpoch, devicetrust.IntentApprovalResume, func() error {
+		entry.expectedLaunchGen = launchGen
+		return nil
+	}) != nil {
+		return false
+	}
 	return true
 }
 
@@ -586,7 +588,7 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 	if entry.resumeNonce != resumeNonce {
 		return WriteHandle{}, outcomeMismatch
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalDeliver) {
+	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalDeliver, func() error { return nil }) {
 		return WriteHandle{}, outcomeStale
 	}
 
@@ -675,7 +677,7 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	if !ok {
 		return outcomeAmbiguous
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit) {
+	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
 		return outcomeAmbiguous
 	}
 	if entry.state != stateWriteClaimed && entry.state != stateWitnessPending {
@@ -734,7 +736,7 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	if !ok {
 		return
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel) {
+	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error { return nil }) {
 		return
 	}
 	switch entry.state {
@@ -916,7 +918,7 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	if !ok {
 		return fail(WitnessStale)
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit) {
+	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
 		return fail(WitnessStale)
 	}
 	if entry.attempt == nil {
@@ -1000,7 +1002,7 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 	if !ok || entry.attempt == nil {
 		return fail(WitnessStale)
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit) {
+	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
 		return fail(WitnessStale)
 	}
 	if entry.decision != "deny" {
