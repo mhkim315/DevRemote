@@ -165,7 +165,7 @@ func isAcceptedVersion(kind, version string) bool {
 	case "codex":
 		return version == "0.144.1"
 	case "claude":
-		return version == "2.1.202"
+		return version == CertifiedClaudeVersion
 	default:
 		return false
 	}

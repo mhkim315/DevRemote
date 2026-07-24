@@ -131,6 +131,11 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>%s</string>
 	<key>WorkingDirectory</key>
 	<string>%s</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
 </dict>
 </plist>`
 
@@ -722,7 +727,8 @@ func installDaemon() error {
 	// The new definition is fully durable before the old service is stopped.
 	stdoutPath := filepath.Join(logDir, "daemon-stdout.log")
 	stderrPath := filepath.Join(logDir, "daemon-stderr.log")
-	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir))
+	launchPath := xmlEscapeString("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+	plistContent := fmt.Sprintf(plistTemplate, xmlEscapeString(daemonLabel), xmlEscapeString(serviceBinPath), xmlEscapeString(stdoutPath), xmlEscapeString(stderrPath), xmlEscapeString(stateDir), launchPath)
 	if err := writeFileAtomic(plistPath, []byte(plistContent), 0o600); err != nil {
 		if rbErr := rollbackInstall(plistPath, priorPlist, hadPriorPlist, statePath, priorState, hadPriorState, serviceBinPath, oldBinPath, backupPath, false); rbErr != nil {
 			return errors.Join(fmt.Errorf("install: cannot atomically write plist: %w", err), rbErr)

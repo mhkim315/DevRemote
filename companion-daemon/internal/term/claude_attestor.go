@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// CertifiedClaudeVersion is the single frozen Claude Code version for all
+// production paths: attestation, launch, telemetry classification, and catalog.
+const CertifiedClaudeVersion = "2.1.209"
+
 // ClaudeEntryConfig holds the pinned Claude provider identity.
 type ClaudeEntryConfig struct {
 	Bin              string
@@ -23,9 +27,9 @@ func PinnedClaudeConfig() ClaudeEntryConfig {
 	home, _ := os.UserHomeDir()
 	return ClaudeEntryConfig{
 		Bin:              "claude",
-		Version:          "2.1.209",
-		AuthorityVersion: "2.1.209",
-		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", "2.1.209"),
+		Version:          CertifiedClaudeVersion,
+		AuthorityVersion: CertifiedClaudeVersion,
+		PinnedPath:       filepath.Join(home, ".local", "share", "claude", "versions", CertifiedClaudeVersion),
 	}
 }
 

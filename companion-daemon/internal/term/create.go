@@ -146,7 +146,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		if req.ProfileID == "codex" {
 			version = "0.144.1"
 		} else if req.ProfileID == "claude" {
-			version = "2.1.202"
+			version = CertifiedClaudeVersion
 		}
 		spec := transcript.LaunchSpec{
 			SessionID: canonicalID, Provider: req.ProfileID, Adapter: adapter,
