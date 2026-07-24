@@ -48,7 +48,7 @@ func getSessionsSnapshot(t *testing.T, h *Handlers) map[string]SessionTelemetry 
 }
 
 func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
-	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
+	svc := testLifecycleService(testOwnedPTYRuntime(nil, nil), nil)
 
 	// Live managed rows with authoritative catalog states.
 	seedCatalog(svc, "controlled_pty:run", "controlled_pty", "runner", LifecycleRunning)
@@ -119,7 +119,7 @@ func TestAPISessions_AuthoritativeLifecycleState(t *testing.T) {
 func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 	// A session both live (Registry) AND cataloged must appear exactly once, with
 	// the authoritative catalog state annotated onto the live row.
-	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
+	svc := testLifecycleService(testOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:s1", "controlled_pty", "s1", LifecycleStopping)
 
 	rows := mergeLifecycleState([]SessionTelemetry{{ID: "controlled_pty:s1", Adapter: "controlled_pty"}}, svc)
@@ -137,7 +137,7 @@ func TestAPISessions_LiveRowWinsOverCatalog_NoDuplicate(t *testing.T) {
 
 func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	// A retained terminal row is listable until Delete History succeeds, then gone.
-	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
+	svc := testLifecycleService(testOwnedPTYRuntime(nil, nil), nil)
 	seedCatalog(svc, "controlled_pty:done", "controlled_pty", "done", LifecycleExited)
 
 	listed := mergeLifecycleState(nil, svc)

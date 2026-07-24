@@ -37,8 +37,8 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	cfg := term.PinnedClaudeConfigWithDigest(digest)
 	cfg.Bin = cfg.PinnedPath
 
-	svc := term.NewManagedClaudeService(cfg, nil, nil)
-	store := term.NewApprovalStore()
+	svc := testManagedClaudeService(cfg, nil, nil)
+	store := testApprovalStore()
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatalf("SetApprovalStore: %v", err)
 	}

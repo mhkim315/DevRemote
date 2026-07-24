@@ -170,13 +170,13 @@ func TestAppV1_CompositionUsesPrivateHTTPMux(t *testing.T) {
 }
 
 func TestAppV1_HandlerRuntimeIsolation(t *testing.T) {
-	ownedA := term.NewOwnedPTYRuntime(nil, nil)
-	ownedB := term.NewOwnedPTYRuntime(nil, nil)
+	ownedA := testOwnedPTYRuntime(nil, nil)
+	ownedB := testOwnedPTYRuntime(nil, nil)
 	ownedA.RegisterForTest("controlled_pty:only-a", "", "A", nil)
 	ownedB.RegisterForTest("controlled_pty:only-b", "", "B", nil)
 	verifier := term.NewSupabaseVerifier(term.AuthConfig{InsecureLocalOnly: true})
-	hA := &term.Handlers{Verifier: verifier, Lifecycle: term.NewLifecycleService(ownedA, nil)}
-	hB := &term.Handlers{Verifier: verifier, Lifecycle: term.NewLifecycleService(ownedB, nil)}
+	hA := &term.Handlers{Verifier: verifier, Lifecycle: testLifecycleService(ownedA, nil)}
+	hB := &term.Handlers{Verifier: verifier, Lifecycle: testLifecycleService(ownedB, nil)}
 
 	for name, tc := range map[string]struct {
 		handler *term.Handlers
@@ -229,7 +229,7 @@ func TestAppV1_PushNotifierConcurrentAccess(t *testing.T) {
 }
 
 func TestAppV1_ManagedCatalogIsCompositionOwned(t *testing.T) {
-	managed := term.NewManagedCodexService(term.CodexAppServerEntryConfig{
+	managed := testManagedCodexService(term.CodexAppServerEntryConfig{
 		Bin: "/pinned/toolchain/node_modules/.bin/codex", Version: "codex-cli 0.144.1", AuthorityVersion: "0.144.1",
 	}, appV1CodexLauncher{})
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true, EnableManagedCodex: true}, Dependencies{

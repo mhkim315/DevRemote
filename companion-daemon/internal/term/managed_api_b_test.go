@@ -42,7 +42,7 @@ func TestManagedEventsAPI_SnapshotCursorOrderingIdempotent(t *testing.T) {
 	id := resp["id"]
 	h := &Handlers{Managed: managed}
 
-	if err := managed.SubmitPrompt(id, 1, "hi"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "hi", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusCompleted)

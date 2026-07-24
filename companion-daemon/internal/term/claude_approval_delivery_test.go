@@ -12,9 +12,9 @@ import (
 )
 
 func TestClaudeDelivery_FullChain(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	launcher := &multiLaunchLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	t.Cleanup(func() {
 		for _, p := range launcher.procs {
@@ -22,7 +22,7 @@ func TestClaudeDelivery_FullChain(t *testing.T) {
 		}
 	})
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}

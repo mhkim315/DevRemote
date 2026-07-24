@@ -143,7 +143,7 @@ func TestTERM_G1_NativeLauncherRejectsZeroNegative(t *testing.T) {
 // comfortably longer graceful period for geometry tests.
 func realOwnedG1(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 2 * time.Second
 	return owned
 }
@@ -155,7 +155,7 @@ func realOwnedG1(t *testing.T) *OwnedPTYRuntime {
 func spawnG1(t *testing.T, owned *OwnedPTYRuntime, name, exe string, args ...string) string {
 	t.Helper()
 	cfg := SpawnConfig{Name: name, Executable: exe, Args: args}
-	id, err := owned.Create(context.Background(), cfg, "", "test")
+	id, err := owned.Create(context.Background(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}

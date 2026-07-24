@@ -26,8 +26,8 @@ func (compositionOperationalSink) SubmitAfterCommit(term.OperationalEvent) {}
 
 func TestSTEP91CompositionInstallsTimelineSinkIntoManagedRuntimes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "timeline.jsonl")
-	codex := term.NewManagedCodexServiceForTest(appV1CodexLauncher{}, func() error { return nil })
-	claude := term.NewManagedClaudeServiceForTest(appV1CodexLauncher{}, compositionClaudeAttestor{})
+	codex := term.NewManagedCodexServiceForTest(appV1CodexLauncher{}, func() error { return nil }, testMutationAuthorizer{})
+	claude := term.NewManagedClaudeServiceForTest(appV1CodexLauncher{}, compositionClaudeAttestor{}, testMutationAuthorizer{})
 	deps := testDeps()
 	deps.Managed = codex
 	deps.ManagedClaude = claude

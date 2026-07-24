@@ -21,7 +21,7 @@ func TestTimelineRealManagedCodexPathRedactsEveryOutput(t *testing.T) {
 	logs := captureTimelineLogs(t)
 	path := filepath.Join(t.TempDir(), "codex-timeline.jsonl")
 	launcher := &sp1FakeLauncher{}
-	service := term.NewManagedCodexServiceForTest(launcher, func() error { return nil })
+	service := term.NewManagedCodexServiceForTest(launcher, func() error { return nil }, testMutationAuthorizer{})
 	app := newRealTimelineProviderApp(t, Config{
 		InsecureLocalOnly: true, EnableManagedCodex: true,
 		EnableTimelineShadow: true, TimelineShadowPath: path, EnableCockpit: true,
@@ -29,11 +29,11 @@ func TestTimelineRealManagedCodexPathRedactsEveryOutput(t *testing.T) {
 		deps.Managed = service
 	})
 
-	sessionID, err := service.CreateAttached("")
+	sessionID, err := service.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.SubmitPrompt(sessionID, 1, "prompt-"+sp1SecretCmd); err != nil {
+	if err := service.SubmitPrompt(sessionID, 1, "prompt-"+sp1SecretCmd, "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	waitForTimelineKinds(t, app.timelineWriter,
@@ -83,7 +83,7 @@ func TestTimelineRealManagedClaudePathRedactsEveryOutput(t *testing.T) {
 	logs := captureTimelineLogs(t)
 	path := filepath.Join(t.TempDir(), "claude-timeline.jsonl")
 	launcher := &compFakeLauncher{resumeWCh: make(chan struct{})}
-	service := term.NewManagedClaudeService(
+	service := testManagedClaudeService(
 		term.ClaudeEntryConfig{
 			Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
 			PinnedPath:   "/tmp/fake-claude",
@@ -98,7 +98,7 @@ func TestTimelineRealManagedClaudePathRedactsEveryOutput(t *testing.T) {
 		deps.ManagedClaude = service
 	})
 
-	sessionID, err := service.CreateDetached("/tmp")
+	sessionID, err := service.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +251,7 @@ func newRealTimelineProviderApp(
 ) *App {
 	t.Helper()
 	deps := testDeps()
+	deps.mutationAuthorizer = testMutationAuthorizer{}
 	deps.OpenTimelineShadow = func(config writer.Config, auth writer.ProducerAuth) (*writer.Writer, error) {
 		return writer.Open(config, auth)
 	}

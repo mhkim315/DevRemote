@@ -33,7 +33,7 @@ func testIdentity() (approvalID, sessionID, toolUseID, toolName, inputDigest, po
 // ── Identity tests ──
 
 func TestReserveIdentity(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	ok := c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
@@ -66,7 +66,7 @@ func TestReserveIdentity(t *testing.T) {
 }
 
 func TestReserveIdentityValidation(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	_, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Empty sessionID.
@@ -101,7 +101,7 @@ func TestReserveIdentityValidation(t *testing.T) {
 }
 
 func TestReserveIdentityCapacityExhausted(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	_, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	for i := 0; i < maxCoordinatorIdentities; i++ {
@@ -120,7 +120,7 @@ func TestReserveIdentityCapacityExhausted(t *testing.T) {
 }
 
 func TestRemoveIdentity(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
@@ -139,12 +139,12 @@ func TestRemoveIdentity(t *testing.T) {
 // ── Entry tests ──
 
 func TestReserveEntry(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
-	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -163,86 +163,86 @@ func TestReserveEntry(t *testing.T) {
 }
 
 func TestReserveEntryMissingIdentity(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	binding := testBinding("claude-missing", "claude_headless:claude-zz")
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected ReserveEntry with missing identity to fail")
 	}
 }
 
 func TestReserveEntryInvalidClaimToken(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
-	_, ok := c.ReserveEntry("bad-token", binding)
+	_, ok := testReserveEntry(c, "bad-token", binding)
 	if ok {
 		t.Fatal("expected invalid claim token to fail")
 	}
 }
 
 func TestReserveEntryWrongOptionID(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.OptionID = "cancel" // not certified
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected uncertified OptionID to fail")
 	}
 }
 
 func TestReserveEntryWrongSchema(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.DeliverySchema = "wrong.schema.v1"
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected wrong schema to fail")
 	}
 }
 
 func TestReserveEntryWrongAdapter(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.Runtime.Adapter = "codex_app_server" // not Claude
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected wrong adapter to fail")
 	}
 }
 
 func TestReserveEntryStaleEpoch(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
 	binding.Runtime.LaunchGen = 99 // different epoch
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected stale epoch to fail")
 	}
 }
 
 func TestReserveEntryDuplicateClaim(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
-	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected duplicate claim to fail")
 	}
@@ -251,7 +251,7 @@ func TestReserveEntryDuplicateClaim(t *testing.T) {
 func TestReserveEntryCapacityExhausted_DistinctFromIdentityCapacity(t *testing.T) {
 	// B5 fix: prove entry capacity is independent of identity capacity.
 	// Use ONE identity and fill entries to maxCoordinatorEntries.
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
@@ -265,7 +265,7 @@ func TestReserveEntryCapacityExhausted_DistinctFromIdentityCapacity(t *testing.T
 	for i := 0; i < maxCoordinatorEntries; i++ {
 		hi, lo := byte(i/16), byte(i%16)
 		ct := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + string(hexDigit(hi)) + string(hexDigit(lo))
-		_, ok := c.ReserveEntry(ct, binding)
+		_, ok := testReserveEntry(c, ct, binding)
 		if !ok {
 			t.Fatalf("expected ReserveEntry #%d to succeed", i+1)
 		}
@@ -275,7 +275,7 @@ func TestReserveEntryCapacityExhausted_DistinctFromIdentityCapacity(t *testing.T
 	}
 
 	// One more should fail — entry capacity exhausted, not missing identity.
-	_, ok := c.ReserveEntry("dddddddddddddddddddddddddddddddd", binding)
+	_, ok := testReserveEntry(c, "dddddddddddddddddddddddddddddddd", binding)
 	if ok {
 		t.Fatal("expected entry capacity exhaustion to fail")
 	}
@@ -290,12 +290,12 @@ func TestReserveEntryEntropyFailure(t *testing.T) {
 	defer func() { coordEntropy = saved }()
 	coordEntropy = &failingReader{}
 
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 
 	binding := testBinding(id, psid)
-	_, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if ok {
 		t.Fatal("expected entropy failure to cause ReserveEntry to fail")
 	}
@@ -304,11 +304,11 @@ func TestReserveEntryEntropyFailure(t *testing.T) {
 // ── ClaimWrite tests ──
 
 func TestClaimWriteSuccess(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -327,12 +327,12 @@ func TestClaimWriteSuccess(t *testing.T) {
 }
 
 func TestClaimWriteDenyDecision(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -347,11 +347,11 @@ func TestClaimWriteDenyDecision(t *testing.T) {
 }
 
 func TestClaimWriteWrongNonce(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	_, _ = c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	_, _ = testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 
 	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", "wrong-nonce", sid, tuid, tn, dig, 1)
 	if out != outcomeMismatch {
@@ -360,11 +360,11 @@ func TestClaimWriteWrongNonce(t *testing.T) {
 }
 
 func TestClaimWriteWrongSessionID(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -383,11 +383,11 @@ func TestClaimWriteWrongSessionID(t *testing.T) {
 }
 
 func TestClaimWriteAfterCancel(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -400,11 +400,11 @@ func TestClaimWriteAfterCancel(t *testing.T) {
 }
 
 func TestClaimWriteAfterClose(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -419,11 +419,11 @@ func TestClaimWriteAfterClose(t *testing.T) {
 // ── ConfirmWrite tests ──
 
 func TestConfirmWriteSuccess(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -439,11 +439,11 @@ func TestConfirmWriteSuccess(t *testing.T) {
 }
 
 func TestConfirmWriteFailure(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -462,11 +462,11 @@ func TestConfirmWriteFailure(t *testing.T) {
 func TestConfirmWriteAfterInvalidation(t *testing.T) {
 	// B3 fix: if the entry is invalidated between ClaimWrite and ConfirmWrite,
 	// ConfirmWrite returns outcomeStale.
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -484,7 +484,7 @@ func TestConfirmWriteAfterInvalidation(t *testing.T) {
 // ── Close/Cancel tests ──
 
 func TestCloseCancelsAllEntries(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	for i := 0; i < 4; i++ {
@@ -492,7 +492,7 @@ func TestCloseCancelsAllEntries(t *testing.T) {
 		c.ReserveIdentity(aid, sid, tuid, tn, dig, "", psid, rt)
 		binding := testBinding(aid, psid)
 		ct := "ccccccccccccccccccccccccccccccc" + string(rune('0'+i))
-		c.ReserveEntry(ct, binding)
+		testReserveEntry(c, ct, binding)
 	}
 	if c.pendingCount() != 4 {
 		t.Fatalf("expected 4 pending before close, got %d", c.pendingCount())
@@ -505,11 +505,11 @@ func TestCloseCancelsAllEntries(t *testing.T) {
 }
 
 func TestClearForApproval(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 
 	c.ClearForApproval(id)
 	if c.identityCount() != 0 {
@@ -521,7 +521,7 @@ func TestClearForApproval(t *testing.T) {
 }
 
 func TestClearRuntime(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Create two identities in the same runtime.
@@ -529,8 +529,8 @@ func TestClearRuntime(t *testing.T) {
 	c.ReserveIdentity(id+"-2", sid, tuid, tn, dig, "", psid, rt)
 	binding1 := testBinding(id+"-1", psid)
 	binding2 := testBinding(id+"-2", psid)
-	c.ReserveEntry("ccccccccccccccccccccccccccccccc1", binding1)
-	c.ReserveEntry("ccccccccccccccccccccccccccccccc2", binding2)
+	testReserveEntry(c, "ccccccccccccccccccccccccccccccc1", binding1)
+	testReserveEntry(c, "ccccccccccccccccccccccccccccccc2", binding2)
 
 	c.ClearRuntime(psid, rt.LaunchGen)
 	if c.identityCount() != 0 {
@@ -542,18 +542,18 @@ func TestClearRuntime(t *testing.T) {
 }
 
 func TestClearRuntimeDifferentSessionUnaffected(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, _, rt := testIdentity()
 
 	// Session A.
 	c.ReserveIdentity(id+"-A", sid, tuid, tn, dig, "", "claude_headless:claude-A", rt)
 	bindingA := testBinding(id+"-A", "claude_headless:claude-A")
-	c.ReserveEntry("0000000000000000000000000000000a", bindingA)
+	testReserveEntry(c, "0000000000000000000000000000000a", bindingA)
 
 	// Session B — different POKIT session, same launchGen.
 	c.ReserveIdentity(id+"-B", sid, tuid, tn, dig, "", "claude_headless:claude-B", rt)
 	bindingB := testBinding(id+"-B", "claude_headless:claude-B")
-	c.ReserveEntry("0000000000000000000000000000000b", bindingB)
+	testReserveEntry(c, "0000000000000000000000000000000b", bindingB)
 
 	// Clear only session A.
 	c.ClearRuntime("claude_headless:claude-A", rt.LaunchGen)
@@ -571,11 +571,11 @@ func TestClearRuntimeDifferentSessionUnaffected(t *testing.T) {
 }
 
 func TestClearStaleEntries(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 
 	fakeNow := clockNow().Add(coordinatorEntryTimeout + time.Second)
 	c.clearStaleEntries(fakeNow)
@@ -594,11 +594,11 @@ func TestClaimWrite_KnownBadCheckThenWrite(t *testing.T) {
 	// that would require modifying the coordinator internals. This test proves
 	// the correct behavior (non-vacuous because the test WILL fail if the
 	// mutex is removed or the state check is racy).
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -637,7 +637,7 @@ func TestClaimWrite_KnownBadCheckThenWrite(t *testing.T) {
 }
 
 func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	for i := 0; i < 8; i++ {
@@ -651,7 +651,7 @@ func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
 		aid := id + string(rune('0'+i))
 		binding := testBinding(aid, psid)
 		token := "ccccccccccccccccccccccccccccccc" + string(rune('0'+i))
-		handles[i], _ = c.ReserveEntry(token, binding)
+		handles[i], _ = testReserveEntry(c, token, binding)
 		if !c.BindResumeProcess(token, handles[i].ResumeNonce, 1) {
 			t.Fatalf("BindResumeProcess #%d failed", i)
 		}
@@ -678,13 +678,13 @@ func TestClaimWriteConcurrentDifferentClaims(t *testing.T) {
 // ── Full lifecycle test ──
 
 func TestFullClaimWriteConfirmCycle(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 
 	// Step 1: Reserve.
-	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -713,11 +713,11 @@ func TestFullClaimWriteConfirmCycle(t *testing.T) {
 
 func TestClaimWriteCancelRace(t *testing.T) {
 	// B2/B3: reserve entry, claim write, then cancel — confirm write fails.
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -744,12 +744,12 @@ func TestClaimWriteCancelRace(t *testing.T) {
 func TestResumeHandleDoesNotExposeInternals(t *testing.T) {
 	// B4 fix: ResumeHandle is opaque — the caller cannot mutate coordinator
 	// state through it.
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -767,11 +767,11 @@ func TestResumeHandleDoesNotExposeInternals(t *testing.T) {
 
 func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 	// B4 fix: WriteHandle is opaque — decision is read-only.
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -789,11 +789,11 @@ func TestWriteHandleDoesNotExposeInternals(t *testing.T) {
 // ── B2: expiry cancels reserved entry ──
 
 func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -814,11 +814,11 @@ func TestReserveThenExpiryThenClaimWrite(t *testing.T) {
 // ── B5: witness cleanup ──
 
 func TestMarkWitnessed(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -851,14 +851,14 @@ func TestMarkWitnessed(t *testing.T) {
 
 func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 	// B2: test wrong-kind on a SEPARATE alive entry (not the one already consumed).
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	// Create a DENY entry and advance it to decisionWritten.
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -877,11 +877,11 @@ func TestMarkWitnessedWrongKindOnAliveEntry(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongState(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -893,11 +893,11 @@ func TestMarkWitnessedWrongState(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongSession(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -914,11 +914,11 @@ func TestMarkWitnessedWrongSession(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongToolUseID(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -932,11 +932,11 @@ func TestMarkWitnessedWrongToolUseID(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongToolName(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -953,11 +953,11 @@ func TestMarkWitnessedWrongToolName(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongInputDigest(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -971,11 +971,11 @@ func TestMarkWitnessedWrongInputDigest(t *testing.T) {
 }
 
 func TestMarkWitnessedWrongRuntime(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -992,11 +992,11 @@ func TestMarkWitnessedWrongRuntime(t *testing.T) {
 // ── B3: direct deadline tests ──
 
 func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1018,11 +1018,11 @@ func TestConfirmWriteExpiredWriteClaim(t *testing.T) {
 }
 
 func TestMarkWitnessedExpiredWitness(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1045,11 +1045,11 @@ func TestMarkWitnessedExpiredWitness(t *testing.T) {
 }
 
 func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1068,11 +1068,11 @@ func TestConfirmWriteJustBeforeDeadline(t *testing.T) {
 }
 
 func TestConfirmWriteJustAfterDeadline(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1101,11 +1101,11 @@ func (f *failingReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpected
 // helper: reserve + pre-bind + write (the production path).
 func r4Setup(t *testing.T) (*claudeResumeCoordinator, ResumeHandle, string, string, string, string, RuntimeRef) {
 	t.Helper()
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !ok {
 		t.Fatal("ReserveEntry failed")
 	}
@@ -1174,11 +1174,11 @@ func TestR4_DifferentSessionIDAfterFirstBind(t *testing.T) {
 
 // Test 11: Wrong resume process generation → ClaimWrite rejects.
 func TestR4_WrongResumeProcessGeneration(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	// Bind with gen 5, but ClaimWrite with gen 3 → mismatch.
 	c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 5)
 	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 3)
@@ -1189,11 +1189,11 @@ func TestR4_WrongResumeProcessGeneration(t *testing.T) {
 
 // Test 22: Missing pre-bound resume generation → ClaimWrite unavailable.
 func TestR4_MissingPreBind_ClaimWriteUnavailable(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	// NO BindResumeProcess → expectedLaunchGen==0 → ClaimWrite must reject.
 	_, out := c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, sid, tuid, tn, dig, 1)
 	if out != outcomeMismatch {
@@ -1309,13 +1309,13 @@ func TestR4_DenyEvidence_MatchesBoundIdentity(t *testing.T) {
 
 func r4SetupForDeny(t *testing.T) (*claudeResumeCoordinator, ResumeHandle, string, string, string, string, RuntimeRef) {
 	t.Helper()
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
 	binding.DeliverySchema = claudeDecisionSchemaV1
-	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !ok {
 		t.Fatal("ReserveEntry for deny failed")
 	}
@@ -1547,13 +1547,13 @@ func TestR4_MissingToolInput_Rejected(t *testing.T) {
 // Test 20: Cross-use: denial with original identity (not bound) → witness rejected.
 func TestR4_DenialCrossUse_OriginalIdentity_Rejected(t *testing.T) {
 	// Reserve identity and entry with ORIGINAL tuid (no bound attempt yet).
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	id, sid, tuid, tn, dig, psid, rt := testIdentity()
 	c.ReserveIdentity(id, sid, tuid, tn, dig, "", psid, rt)
 	binding := testBinding(id, psid)
 	binding.OptionID = "deny"
 	binding.DeliverySchema = claudeDecisionSchemaV1
-	handle, _ := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, _ := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1)
 	// ClaimWrite with NEW identity.
 	c.ClaimWrite("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, "new-sess", "new-tu", tn, dig, 1)

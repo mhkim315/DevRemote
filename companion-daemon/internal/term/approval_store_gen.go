@@ -146,15 +146,11 @@ type AuthoritativeApprovalStore struct {
 	authorizer devicetrust.MutationAuthorizer
 }
 
-func NewAuthoritativeApprovalStore(authorizers ...devicetrust.MutationAuthorizer) *AuthoritativeApprovalStore {
-	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
-	if len(authorizers) > 0 {
-		if authorizers[0] == nil {
-			return nil
-		}
-		authorizer = authorizers[0]
+func NewAuthoritativeApprovalStore(authorizer devicetrust.MutationAuthorizer) (*AuthoritativeApprovalStore, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("approval mutation authorizer is required")
 	}
-	return &AuthoritativeApprovalStore{sessions: make(map[string]*sessionApprovals), now: time.Now, authorizer: authorizer}
+	return &AuthoritativeApprovalStore{sessions: make(map[string]*sessionApprovals), now: time.Now, authorizer: authorizer}, nil
 }
 
 func genNewer(launchA int64, streamA int, launchB int64, streamB int) bool {

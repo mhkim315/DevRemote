@@ -34,7 +34,10 @@ func TestEpochLock_ApprovalClaimBarrier(t *testing.T) {
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
 	calls := 0
 	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
-	store := NewApprovalStore(authorizer)
+	store, err := NewApprovalStore(authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ingestActionable(t, store, sid, "codexas-1-7", "7")
 	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalClaim); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
@@ -60,7 +63,10 @@ func TestEpochLock_ApprovalCommitBarrier(t *testing.T) {
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
 	calls := 0
 	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
-	store := NewApprovalStore(authorizer)
+	store, err := NewApprovalStore(authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ingestActionable(t, store, sid, "codexas-1-7", "7")
 	claim := mustClaim(t, store, sid, "codexas-1-7", "allow_once", "k1")
 	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalCommit); err != nil { // handler preflight
@@ -83,27 +89,30 @@ func TestEpochLock_ApprovalCommitBarrier(t *testing.T) {
 // gate rechecks authorization while holding its acceptance lock, before queue
 // admission/provider delivery.
 func TestEpochLock_ApprovalDeliveryBarrier(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	sid := codexAppServerAdapter + ":epoch-delivery"
 	ingestActionable(t, store, sid, "codexas-1-7", "7")
 	claim := mustClaim(t, store, sid, "codexas-1-7", "allow_once", "k1")
 
-	gate := NewRuntimeDeliveryGate()
-	handle, ok := gate.Activate(sid, boundManagedRT(), 1)
-	if !ok || handle == "" {
-		t.Fatal("delivery gate activation failed")
-	}
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
 	calls := 0
 	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
+	gate, err := NewRuntimeDeliveryGate(authorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, ok := gate.Activate(sid, boundManagedRT(), 1)
+	if !ok || handle == "" {
+		t.Fatal("delivery gate activation failed")
+	}
 	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalDeliver); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
 	currentEpoch = 1
 	receipt := NewGatedApprovalDelivery(gate).Deliver(ApprovalDeliveryRequest{
 		ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
-		Authorization: MutationAuthorization{Authorizer: authorizer, DeviceID: principal.DeviceID, DeviceEpoch: 0},
+		DeviceID: principal.DeviceID, DeviceEpoch: 0,
 	})
 	if receipt.Outcome != DeliveryUnavailable {
 		t.Fatalf("stale delivery outcome = %s, want unavailable", receipt.Outcome)
@@ -118,19 +127,23 @@ func TestEpochLock_ApprovalDeliveryBarrier(t *testing.T) {
 // must observe zero turn/start writes after the barrier revoke.
 func TestEpochLock_PromptBarrier(t *testing.T) {
 	provider := &interactiveAppServer{threadID: "thread-epoch-prompt"}
-	managed, _ := newInteractiveService(t, provider)
+	currentEpoch := int64(0)
+	checks := 0
+	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &checks, revokeOn: 2}
+	managed, _ := newInteractiveServiceWithAuthorizer(t, provider, authorizer)
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
 	t.Cleanup(func() { _ = managed.Kill(id, 1, "", 0) })
 
-	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	checks := 0
-	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &checks, revokeOn: 2}
+	// Session creation is itself authorized; reset the barrier seam so the
+	// preflight and prompt-internal checks are the two calls under test.
+	currentEpoch = 0
+	checks = 0
 	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentPrompt); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
-	if err := managed.SubmitPrompt(id, 1, "blocked", MutationAuthorization{Authorizer: authorizer, DeviceID: principal.DeviceID, DeviceEpoch: 0}); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "blocked", principal.DeviceID, 0); err == nil {
 		t.Fatal("stale prompt was accepted")
 	}
 	if checks < 2 {

@@ -3,6 +3,7 @@ package term
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,10 +81,11 @@ func deliveryProvesNonAcceptance(o DeliveryOutcome) bool {
 // ApprovalDeliveryRequest carries the claim token, immutable binding, and the exact
 // server-computed payload bytes.
 type ApprovalDeliveryRequest struct {
-	ClaimToken    string
-	Binding       ApprovalExecutionBinding
-	Payload       []byte
-	Authorization MutationAuthorization
+	ClaimToken  string
+	Binding     ApprovalExecutionBinding
+	Payload     []byte
+	DeviceID    string
+	DeviceEpoch uint64
 }
 
 // DeliveryReceipt is the immutable, fully-bound result of a delivery attempt.
@@ -320,6 +322,7 @@ type genEndpoint struct {
 // already-accepted items are not destroyed by a replacement.
 type RuntimeDeliveryGate struct {
 	mu         sync.Mutex
+	authorizer devicetrust.MutationAuthorizer
 	current    map[string]string       // sessionID -> current endpoint id
 	endpoints  map[string]*genEndpoint // endpoint id -> endpoint (current or retired)
 	order      []string                // endpoint ids in creation order (bounded eviction)
@@ -333,8 +336,11 @@ type RuntimeDeliveryGate struct {
 	acceptEntryHook func()
 }
 
-func NewRuntimeDeliveryGate() *RuntimeDeliveryGate {
-	return &RuntimeDeliveryGate{current: make(map[string]string), endpoints: make(map[string]*genEndpoint)}
+func NewRuntimeDeliveryGate(authorizer devicetrust.MutationAuthorizer) (*RuntimeDeliveryGate, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("delivery gate mutation authorizer is required")
+	}
+	return &RuntimeDeliveryGate{authorizer: authorizer, current: make(map[string]string), endpoints: make(map[string]*genEndpoint)}, nil
 }
 
 // genToken produces an opaque server-side identifier, or ("", false) on entropy
@@ -510,7 +516,7 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err := req.Authorization.authorize(devicetrust.IntentApprovalDeliver); err != nil {
+	if err := g.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
 		return DeliveryReceipt{}, "", false
 	}
 

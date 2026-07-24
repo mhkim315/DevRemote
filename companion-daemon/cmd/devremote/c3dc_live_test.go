@@ -308,7 +308,7 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 	}
 
 	launcher := &c3dcTeeLauncher{}
-	svc := term.NewManagedClaudeService(cfg, launcher, term.NewClaudeAttestor(cfg))
+	svc := testManagedClaudeService(cfg, launcher, term.NewClaudeAttestor(cfg))
 	fx := newRemoteFixtureWith(t, nil, nil, func(c *Config, deps *Dependencies) {
 		c.EnableManagedClaude = true
 		deps.ManagedClaude = svc
@@ -335,7 +335,7 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 		}
 		defer os.RemoveAll(cwd)
 
-		sid, err := svc.CreateDetached(cwd)
+		sid, err := svc.CreateDetached(cwd, "test-device", 0)
 		if err != nil {
 			t.Fatalf("%s CreateDetached: %v", run, err)
 		}

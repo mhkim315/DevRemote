@@ -127,7 +127,7 @@ func TestPA4_4_ApprovalDeliveryUsesExactProviderIdentity(t *testing.T) {
 	// ApprovalDelivery and RuntimeDeliveryGate are constructed with
 	// explicit provider/session binding. They never consult Registry,
 	// process info, screen text, or raw JSONL for identity resolution.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if store == nil {
 		t.Fatal("NewApprovalStore returned nil")
 	}

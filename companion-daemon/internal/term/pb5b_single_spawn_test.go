@@ -55,8 +55,8 @@ func (c *v1TestCleanup) Execute(context.Context) CleanupOutcome {
 
 func TestPB5_V1CreateUsesExactlyOneSpawn(t *testing.T) {
 	l := &v1TestLauncher{handle: &v1TestHandle{Reader: emptyReader{}}}
-	o := NewOwnedPTYRuntime(l, nil)
-	if _, err := o.Create(context.Background(), SpawnConfig{Name: "test", Executable: "true"}, "", "test"); err != nil {
+	o := testOwnedPTYRuntime(l, nil)
+	if _, err := o.Create(context.Background(), SpawnConfig{Name: "test", Executable: "true"}, "", "test", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	if l.calls != 1 {

@@ -302,17 +302,21 @@ type resumeEntry struct {
 // claudeResumeCoordinator is the C2D-B private one-shot resume coordinator.
 type claudeResumeCoordinator struct {
 	mu         sync.Mutex
+	authorizer devicetrust.MutationAuthorizer
 	identities map[string]*claudePrivateIdentity // ApprovalID → identity
 	entries    map[string]*resumeEntry           // claimToken → entry
 	closed     bool
 }
 
 // NewClaudeResumeCoordinator creates an empty coordinator.
-func NewClaudeResumeCoordinator() *claudeResumeCoordinator {
-	return &claudeResumeCoordinator{
+func NewClaudeResumeCoordinator(authorizer devicetrust.MutationAuthorizer) (*claudeResumeCoordinator, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("claude coordinator mutation authorizer is required")
+	}
+	return &claudeResumeCoordinator{authorizer: authorizer,
 		identities: make(map[string]*claudePrivateIdentity),
 		entries:    make(map[string]*resumeEntry),
-	}
+	}, nil
 }
 
 // ── Identity lifecycle ──
@@ -483,7 +487,7 @@ func (c *claudeResumeCoordinator) BindResumeProcess(claimToken, resumeNonce stri
 // POKIT session ID. A stale epoch, wrong adapter, or cross-session
 // binding is rejected. The full binding is preserved defensively so
 // claim→write→witness→receipt carries the same identity.
-func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding, authorizations ...MutationAuthorization) (ResumeHandle, bool) {
+func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding, deviceID string, deviceEpoch uint64) (ResumeHandle, bool) {
 	if !validCoordinatorClaimToken(claimToken) {
 		return ResumeHandle{}, false
 	}
@@ -501,10 +505,6 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 		return ResumeHandle{}, false
 	}
 
-	authorization := MutationAuthorization{Authorizer: localMutationAuthorizer{}}
-	if len(authorizations) > 0 {
-		authorization = authorizations[0]
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -522,7 +522,7 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	if _, dup := c.entries[claimToken]; dup {
 		return ResumeHandle{}, false
 	}
-	if err := authorization.authorize(devicetrust.IntentApprovalDeliver); err != nil {
+	if err := c.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
 		return ResumeHandle{}, false
 	}
 	if len(c.entries) >= maxCoordinatorEntries {

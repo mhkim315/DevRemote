@@ -76,19 +76,15 @@ type LifecycleService struct {
 // NewLifecycleService constructs the dispatcher with the controlled-PTY owner.
 // Provider owners and the read catalog are wired after construction (they are
 // built later in the composition root) via WireManagedOwners.
-func NewLifecycleService(ownedPTY *OwnedPTYRuntime, transcriptSvc *transcript.Service, authorizers ...devicetrust.MutationAuthorizer) *LifecycleService {
-	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
-	if len(authorizers) > 0 {
-		if authorizers[0] == nil {
-			return nil
-		}
-		authorizer = authorizers[0]
+func NewLifecycleService(authorizer devicetrust.MutationAuthorizer, ownedPTY *OwnedPTYRuntime, transcriptSvc *transcript.Service) (*LifecycleService, error) {
+	if authorizer == nil {
+		return nil, errors.New("lifecycle mutation authorizer is required")
 	}
 	return &LifecycleService{
 		ownedPTY:   ownedPTY,
 		transcript: transcriptSvc,
 		authorizer: authorizer,
-	}
+	}, nil
 }
 
 // WireManagedOwners wires the structured-provider lifecycle owners and the

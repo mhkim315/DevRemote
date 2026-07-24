@@ -145,10 +145,7 @@ func (h *Handlers) authorizeRequest(r *http.Request, intent devicetrust.Mutation
 	if p == nil {
 		return nil
 	}
-	if h.Authorizer == nil {
-		return fmt.Errorf("mutation authorizer unavailable")
-	}
-	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
+	return h.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
 
 // authorizePrincipal validates a WebSocket principal at a mutation boundary.
@@ -156,10 +153,7 @@ func (h *Handlers) authorizePrincipal(p *devicetrust.Principal, intent devicetru
 	if p == nil {
 		return nil
 	}
-	if h.Authorizer == nil {
-		return fmt.Errorf("mutation authorizer unavailable")
-	}
-	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
+	return h.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}

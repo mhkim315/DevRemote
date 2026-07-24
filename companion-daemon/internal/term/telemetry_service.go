@@ -3,6 +3,7 @@ package term
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	claude "devremote/companion-daemon/internal/agent/adapters/claude/v2_1_202"
 	codex "devremote/companion-daemon/internal/agent/adapters/codex/v0_144_1"
 	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -31,12 +33,19 @@ type TelemetryService struct {
 }
 
 // NewTelemetryService creates a TelemetryService. Call Run() to start sampling.
-func NewTelemetryService(notifier Notifier, approvals *AuthoritativeApprovalStore, transcriptSvc *transcript.Service) *TelemetryService {
+func NewTelemetryService(authorizer devicetrust.MutationAuthorizer, notifier Notifier, approvals *AuthoritativeApprovalStore, transcriptSvc *transcript.Service) (*TelemetryService, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("telemetry mutation authorizer is required")
+	}
 	if notifier == nil {
 		notifier = NoopNotifier{}
 	}
 	if approvals == nil {
-		approvals = NewAuthoritativeApprovalStore()
+		var err error
+		approvals, err = NewAuthoritativeApprovalStore(authorizer)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &TelemetryService{
 		notifier:      notifier,
@@ -46,7 +55,7 @@ func NewTelemetryService(notifier Notifier, approvals *AuthoritativeApprovalStor
 		statusStore:   NewAgentStatusStore(),
 		adapterStates: make(map[string]*adapterState),
 		done:          make(chan struct{}),
-	}
+	}, nil
 }
 
 // Run starts the background telemetry sampling loop. Blocks until ctx is cancelled.

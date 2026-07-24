@@ -32,7 +32,7 @@ type claudeAppFixture struct {
 func newClaudeAppFixture(t *testing.T) *claudeAppFixture {
 	t.Helper()
 	launcher := &compFakeLauncher{resumeWCh: make(chan struct{})}
-	svc := term.NewManagedClaudeService(
+	svc := testManagedClaudeService(
 		term.ClaudeEntryConfig{
 			Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
 			PinnedPath:   "/tmp/fake-claude",
@@ -64,7 +64,7 @@ func newClaudeAppFixture(t *testing.T) *claudeAppFixture {
 func (fx *claudeAppFixture) seedClaudeRecord(t *testing.T) (sid, aid string, rtRef term.RuntimeRef) {
 	t.Helper()
 	var err error
-	sid, err = fx.svc.CreateDetached("/tmp")
+	sid, err = fx.svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -154,6 +154,8 @@ func newRemoteFixtureInDir(t *testing.T, dir string, mutate func(*Config, *Depen
 		t.Fatalf("device registry: %v", err)
 	}
 	deps := testDeps()
+	deps.HostIdentity = id
+	deps.DeviceRegistry = reg
 	cfg := Config{InsecureLocalOnly: false}
 	if mutate != nil {
 		mutate(&cfg, &deps)
@@ -162,14 +164,6 @@ func newRemoteFixtureInDir(t *testing.T, dir string, mutate func(*Config, *Depen
 	if err != nil {
 		t.Fatalf("NewAppWithDeps: %v", err)
 	}
-	// Production late-wiring performed by App.Run(); replicate it exactly.
-	app.hostIdentity = id
-	app.deviceRegistry = reg
-	app.sessionMgr.GetAuth = reg.GetAuth
-	app.handlers.HostIdentity = id
-	app.authHandler.Identity = id
-	app.authHandler.Registry = reg
-
 	srv := httptest.NewServer(app.server.Handler)
 	t.Cleanup(srv.Close)
 	return &remoteFixture{app: app, srv: srv, id: id, reg: reg}
@@ -180,7 +174,7 @@ func newRemoteFixtureInDir(t *testing.T, dir string, mutate func(*Config, *Depen
 func newClaudeAppFixtureInDir(t *testing.T, dir string) *claudeAppFixture {
 	t.Helper()
 	launcher := &compFakeLauncher{resumeWCh: make(chan struct{})}
-	svc := term.NewManagedClaudeService(
+	svc := testManagedClaudeService(
 		term.ClaudeEntryConfig{
 			Bin: "claude", Version: "2.1.209", AuthorityVersion: "2.1.209",
 			PinnedPath:   "/tmp/fake-claude",
@@ -562,7 +556,7 @@ func TestC3DB_NonActionableRejected(t *testing.T) {
 	fx := newClaudeAppFixture(t)
 	tok := fx.bearer(t)
 
-	sid, _ := fx.svc.CreateDetached("/tmp")
+	sid, _ := fx.svc.CreateDetached("/tmp", "test-device", 0)
 	nonCatID := "claude-nonact-1"
 	fx.store.IngestObserved(term.ApprovalIngest{
 		SessionID: sid, LaunchGen: 1, StreamGen: 0,

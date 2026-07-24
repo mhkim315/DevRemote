@@ -137,15 +137,16 @@ func (p *execProcess) OpaqueID() string {
 // framing, handshake, and the single event-pump goroutine. Nothing else may
 // touch the child's stdio.
 type codexManagedRuntime struct {
-	sessionID string
-	runtimeID string
-	epoch     int64
-	proc      ManagedProcess
-	reg       *ManagedSessionRegistry
-	scanner   *bufio.Scanner
-	writeMu   sync.Mutex
-	nextID    int64
-	threadID  string
+	authorizer devicetrust.MutationAuthorizer
+	sessionID  string
+	runtimeID  string
+	epoch      int64
+	proc       ManagedProcess
+	reg        *ManagedSessionRegistry
+	scanner    *bufio.Scanner
+	writeMu    sync.Mutex
+	nextID     int64
+	threadID   string
 	// events is the per-session bounded projection store (SP0.5). The pump
 	// is its only producer.
 	events *managedEventStore
@@ -193,10 +194,10 @@ type codexManagedRuntime struct {
 	finishOnce  sync.Once
 }
 
-func newCodexManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
+func newCodexManagedRuntime(authorizer devicetrust.MutationAuthorizer, proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	return &codexManagedRuntime{proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{}),
+	return &codexManagedRuntime{authorizer: authorizer, proc: proc, epoch: epoch, reg: reg, scanner: sc, exited: make(chan struct{}),
 		pendingApprovals: make(map[int64]pendingProviderRequest),
 		respWaiters:      make(map[int64]*approvalResponseWaiter)}
 }
@@ -527,7 +528,7 @@ func (rt *codexManagedRuntime) emitFinished() {
 // through the owned transport. Claim under lock, provider write after
 // release, claim rollback on write failure. A concurrent prompt conflicts
 // with ZERO provider write.
-func (rt *codexManagedRuntime) submitPrompt(text string, authorization MutationAuthorization) error {
+func (rt *codexManagedRuntime) submitPrompt(text string, deviceID string, deviceEpoch uint64) error {
 	rt.turnMu.Lock()
 	if rt.turnClosed {
 		rt.turnMu.Unlock()
@@ -539,7 +540,7 @@ func (rt *codexManagedRuntime) submitPrompt(text string, authorization MutationA
 	}
 	// This is the lock-internal prompt authorization boundary. The HTTP
 	// handler has already checked the bearer, but revoke can race that check.
-	if err := authorization.authorize(devicetrust.IntentPrompt); err != nil {
+	if err := rt.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt); err != nil {
 		rt.turnMu.Unlock()
 		return err
 	}
@@ -654,7 +655,7 @@ type ManagedCodexService struct {
 	createBarrier func(stage string)
 
 	// 9.4-D: mandatory mutation authorizer. Nil not permitted.
-	Authorizer devicetrust.MutationAuthorizer
+	authorizer devicetrust.MutationAuthorizer
 }
 
 func (s *ManagedCodexService) barrier(stage string) {
@@ -666,13 +667,9 @@ func (s *ManagedCodexService) barrier(stage string) {
 // NewManagedCodexService creates the service. launcher nil means the
 // production execLauncher. Identity verification runs per create, not here,
 // so daemon boot never executes the provider.
-func NewManagedCodexService(cfg CodexAppServerEntryConfig, launcher ManagedLauncher, authorizers ...devicetrust.MutationAuthorizer) *ManagedCodexService {
-	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
-	if len(authorizers) > 0 {
-		if authorizers[0] == nil {
-			return nil
-		}
-		authorizer = authorizers[0]
+func NewManagedCodexService(authorizer devicetrust.MutationAuthorizer, cfg CodexAppServerEntryConfig, launcher ManagedLauncher) (*ManagedCodexService, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("managed codex mutation authorizer is required")
 	}
 	if launcher == nil {
 		launcher = execLauncher{}
@@ -685,10 +682,10 @@ func NewManagedCodexService(cfg CodexAppServerEntryConfig, launcher ManagedLaunc
 		reg:              NewManagedSessionRegistry(maxManagedSessions),
 		leases:           make(map[*inflightCreate]struct{}),
 		runtimes:         make(map[string]*codexManagedRuntime),
-		Authorizer:       authorizer,
+		authorizer:       authorizer,
 	}
 	s.leaseCond = sync.NewCond(&s.mu)
-	return s
+	return s, nil
 }
 
 // beginLease registers an in-flight create BEFORE verify/spawn. Fails closed
@@ -718,31 +715,19 @@ func (s *ManagedCodexService) endLease(lease *inflightCreate) {
 // tests that must not execute the pinned provider binary. Never called by the
 // composition root (which always uses NewManagedCodexService + the fail-closed
 // pinned Verify).
-func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error) *ManagedCodexService {
-	s := NewManagedCodexService(CodexAppServerEntryConfig{
+func NewManagedCodexServiceForTest(launcher ManagedLauncher, verify func() error, authorizer devicetrust.MutationAuthorizer) *ManagedCodexService {
+	s, err := NewManagedCodexService(authorizer, CodexAppServerEntryConfig{
 		Bin:              "/pinned/test/node_modules/.bin/codex",
 		Version:          "codex-cli 0.144.1",
 		AuthorityVersion: certifiedCodexAuthorityVersion,
 	}, launcher)
+	if err != nil {
+		panic(err)
+	}
 	if verify != nil {
 		s.verify = verify
 	}
 	return s
-}
-
-// SetMutationAuthorizer is a composition-only seam for a dependency-injected
-// service. Production services receive the authorizer in the constructor.
-func (s *ManagedCodexService) SetMutationAuthorizer(authorizer devicetrust.MutationAuthorizer) error {
-	if authorizer == nil {
-		return fmt.Errorf("managed codex mutation authorizer is required")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closing || s.gen != 0 || len(s.runtimes) != 0 {
-		return fmt.Errorf("managed codex mutation authorizer cannot be changed after start")
-	}
-	s.Authorizer = authorizer
-	return nil
 }
 
 // Registry exposes the owned-session registry for the read-only REST surface.
@@ -821,7 +806,7 @@ func (s *ManagedCodexService) SetOperationalEventSink(sink OperationalEventSink)
 // runtime and the owned registry, enforces one-active-turn, and delivers the
 // prompt only through the owned app-server transport. Every failure is
 // fail-closed with ZERO provider write.
-func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text string, authorization ...MutationAuthorization) error {
+func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text string, deviceID string, deviceEpoch uint64) error {
 	if err := validateManagedPrompt(text); err != nil {
 		return err
 	}
@@ -838,13 +823,7 @@ func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text s
 	if !ok || rec.Exited {
 		return fmt.Errorf("managed session closed")
 	}
-	var auth MutationAuthorization
-	if len(authorization) > 0 {
-		auth = authorization[0]
-	} else {
-		auth.Authorizer = localMutationAuthorizer{}
-	}
-	return rt.submitPrompt(text, auth)
+	return rt.submitPrompt(text, deviceID, deviceEpoch)
 }
 
 // eventStoreFor resolves a session's projection store and current epoch.
@@ -873,7 +852,7 @@ func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64, de
 		return nil, fmt.Errorf("stale session epoch")
 	}
 	// 9.4-D: atomic device authorization under s.mu before returning runtime.
-	if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
@@ -973,7 +952,7 @@ func (s *ManagedCodexService) Delete(sessionID string, epoch int64, deviceID str
 		return fmt.Errorf("managed session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
-	if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
 		s.mu.Unlock()
 		return err
 	}
@@ -1004,22 +983,18 @@ func (s *ManagedCodexService) Delete(sessionID string, epoch int64, deviceID str
 // child even before publication) and waits — bounded by the caller's ctx —
 // until every in-flight create has rolled back or published. No lock is held
 // across external I/O.
-func (s *ManagedCodexService) CreateDetached(cwd string, authorizations ...MutationAuthorization) (string, error) {
-	return s.createAuthorized(cwd, true, authorizations...)
+func (s *ManagedCodexService) CreateDetached(cwd string, deviceID string, deviceEpoch uint64) (string, error) {
+	return s.createAuthorized(cwd, true, deviceID, deviceEpoch)
 }
 
 // CreateAttached creates a managed session with NO automatic turn (SP0.5
 // interactive path): prompts arrive one-at-a-time through SubmitPrompt.
-func (s *ManagedCodexService) CreateAttached(cwd string, authorizations ...MutationAuthorization) (string, error) {
-	return s.createAuthorized(cwd, false, authorizations...)
+func (s *ManagedCodexService) CreateAttached(cwd string, deviceID string, deviceEpoch uint64) (string, error) {
+	return s.createAuthorized(cwd, false, deviceID, deviceEpoch)
 }
 
-func (s *ManagedCodexService) createAuthorized(cwd string, certification bool, authorizations ...MutationAuthorization) (string, error) {
-	authorization := MutationAuthorization{Authorizer: localMutationAuthorizer{}}
-	if len(authorizations) > 0 {
-		authorization = authorizations[0]
-	}
-	if err := authorization.authorize(devicetrust.IntentSessionCreate); err != nil {
+func (s *ManagedCodexService) createAuthorized(cwd string, certification bool, deviceID string, deviceEpoch uint64) (string, error) {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
 		return "", err
 	}
 	return s.create(cwd, certification)
@@ -1070,7 +1045,7 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	}
 	s.gen++
 	epoch := s.gen
-	rt := newCodexManagedRuntime(proc, epoch, s.reg)
+	rt := newCodexManagedRuntime(s.authorizer, proc, epoch, s.reg)
 	rt.sessionID = id
 	rt.runtimeID = proc.OpaqueID()
 	rt.events = newManagedEventStore(id, epoch)

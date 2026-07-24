@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -96,9 +95,14 @@ type Dependencies struct {
 	DeviceSessionConfig *devicetrust.DeviceSessionManagerConfig
 	WSTicketConfig      *devicetrust.WSTicketStoreConfig
 	Audit               devicetrust.AuditLog // M2.5-5: nil ⇒ NopAuditLog in NewAppWithDeps
-	StartWatcher        func() (watcherResource, error)
-	StartIPC            func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error)
-	StartTunnel         func() tunnelResource
+	HostIdentity        *devicetrust.HostIdentity
+	DeviceRegistry      *devicetrust.DeviceRegistry
+	// mutationAuthorizer is a test-only composition seam. Production callers
+	// leave it unset so the registry-backed authorizer is always selected.
+	mutationAuthorizer devicetrust.MutationAuthorizer
+	StartWatcher       func() (watcherResource, error)
+	StartIPC           func(path string, telemetry *term.TelemetryService, lifecycle *term.LifecycleService) (ipcResource, error)
+	StartTunnel        func() tunnelResource
 	// Managed injects a pre-built managed Codex service (deterministic-test
 	// seam: a fake ManagedLauncher instead of the pinned production spawn).
 	// nil ⇒ the production service is constructed when EnableManagedCodex.
@@ -112,40 +116,27 @@ type Dependencies struct {
 	OpenTimelineShadow func(writer.Config, writer.ProducerAuth) (*writer.Writer, error)
 }
 
-// compositionMutationAuthorizer gives every mutation owner a non-nil
-// constructor dependency before Run, then atomically binds the persistent
-// registry before the listener starts. Dependency-injected composition tests
-// may exercise the mux before Run; that intentionally remains local-only until
-// the daemon has bound its persistent trust root.
+var ErrMutationAuthorityNotReady = errors.New("mutation authority not ready")
+
+// compositionMutationAuthorizer is immutable after construction. It is
+// deliberately fail-closed when unready; there is no local or empty-device
+// bypass before the trust root is available.
 type compositionMutationAuthorizer struct {
-	mu     sync.RWMutex
 	target devicetrust.MutationAuthorizer
-	ready  bool
+}
+
+func newCompositionMutationAuthorizer(target devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
+	if target == nil {
+		return nil, ErrMutationAuthorityNotReady
+	}
+	return &compositionMutationAuthorizer{target: target}, nil
 }
 
 func (a *compositionMutationAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
-	// An empty device ID is the explicit local-only path. Remote principals
-	// always carry a non-empty ID and are checked against the persistent registry.
-	if deviceID == "" {
-		return nil
+	if a == nil || a.target == nil {
+		return ErrMutationAuthorityNotReady
 	}
-	a.mu.RLock()
-	target, ready := a.target, a.ready
-	a.mu.RUnlock()
-	if !ready {
-		return nil
-	}
-	if target == nil {
-		return fmt.Errorf("device mutation authorizer unavailable")
-	}
-	return target.AuthorizeCommit(deviceID, epoch, intent)
-}
-
-func (a *compositionMutationAuthorizer) bind(target devicetrust.MutationAuthorizer) {
-	a.mu.Lock()
-	a.target = target
-	a.ready = true
-	a.mu.Unlock()
+	return a.target.AuthorizeCommit(deviceID, epoch, intent)
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -234,8 +225,27 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		}
 	}()
 
-	hostIdentity, deviceRegistry := initDeviceTrust()
-	compositionAuth := &compositionMutationAuthorizer{target: deviceRegistry}
+	hostIdentity, deviceRegistry := deps.HostIdentity, deps.DeviceRegistry
+	if hostIdentity == nil || deviceRegistry == nil {
+		defaultIdentity, defaultRegistry := initDeviceTrust()
+		if hostIdentity == nil {
+			hostIdentity = defaultIdentity
+		}
+		if deviceRegistry == nil {
+			deviceRegistry = defaultRegistry
+		}
+	}
+	if deviceRegistry == nil {
+		return nil, fmt.Errorf("device mutation authorizer unavailable")
+	}
+	mutationTarget := devicetrust.MutationAuthorizer(deviceRegistry)
+	if deps.mutationAuthorizer != nil {
+		mutationTarget = deps.mutationAuthorizer
+	}
+	compositionAuth, authErr := newCompositionMutationAuthorizer(mutationTarget)
+	if authErr != nil {
+		return nil, authErr
+	}
 	var authorizer devicetrust.MutationAuthorizer = compositionAuth
 
 	cmds := deps.Cmds
@@ -243,9 +253,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		cmds = term.NewCommandBroker()
 	}
 	// Phase A9: approval tracking.
-	approvals := term.NewApprovalStore(authorizer)
-	if approvals == nil {
-		return nil, fmt.Errorf("approval mutation authorizer unavailable")
+	approvals, err := term.NewApprovalStore(authorizer)
+	if err != nil {
+		return nil, err
 	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
@@ -299,8 +309,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	ownedPTY := term.NewOwnedPTYRuntime(term.NewNativePTYLauncher(), transcriptSvc, authorizer)
-	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc, authorizer)
+	ownedPTY, err := term.NewOwnedPTYRuntime(authorizer, term.NewNativePTYLauncher(), transcriptSvc)
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := term.NewLifecycleService(authorizer, ownedPTY, transcriptSvc)
+	if err != nil {
+		return nil, err
+	}
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
 	// pinned launcher, the owned-session registry, and every managed child.
@@ -309,13 +325,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if cfg.EnableManagedCodex {
 		if deps.Managed != nil {
 			managed = deps.Managed
-			if err := managed.SetMutationAuthorizer(authorizer); err != nil {
-				return nil, err
-			}
 		} else {
-			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil, authorizer)
-			if managed == nil {
-				return nil, fmt.Errorf("managed codex mutation authorizer unavailable")
+			managed, err = term.NewManagedCodexService(authorizer, term.PinnedConfig0x144(), nil)
+			if err != nil {
+				return nil, err
 			}
 		}
 		// SP1-P1/P2B-R1: configure the ONE canonical approval store. The store
@@ -337,17 +350,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if cfg.EnableManagedClaude {
 		if deps.ManagedClaude != nil {
 			managedClaude = deps.ManagedClaude
-			if err := managedClaude.SetMutationAuthorizer(authorizer); err != nil {
-				return nil, err
-			}
 		} else {
 			cc := term.PinnedClaudeConfig()
 			if cfg.ClaudeDigest != "" {
 				cc = term.PinnedClaudeConfigWithDigest(cfg.ClaudeDigest)
 			}
-			managedClaude = term.NewManagedClaudeService(cc, nil, nil, authorizer)
-			if managedClaude == nil {
-				return nil, fmt.Errorf("managed claude mutation authorizer unavailable")
+			managedClaude, err = term.NewManagedClaudeService(authorizer, cc, nil, nil)
+			if err != nil {
+				return nil, err
 			}
 		}
 		// C1D: configure the ONE canonical approval store as the non-actionable
@@ -441,7 +451,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	h.WSTickets = wsTickets
 	h.ConnRegistry = connRegistry
 	h.SessionMgr = sessionMgr
-	h.HostIdentity = nil
+	h.HostIdentity = hostIdentity
 	h.Audit = audit
 	h.Managed = managed
 	h.ManagedClaude = managedClaude
@@ -451,7 +461,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// bytes); the gate is wired into the real call graph (below, telemetry drives
 	// its activation/deactivation) so a future actionable path is linearized
 	// against runtime replacement.
-	deliveryGate := term.NewRuntimeDeliveryGate()
+	deliveryGate, err := term.NewRuntimeDeliveryGate(authorizer)
+	if err != nil {
+		return nil, err
+	}
 	gateDelivery := term.NewGatedApprovalDelivery(deliveryGate)
 	h.ApprovalDelivery = gateDelivery
 	// SP1-P2B: the ONE production-owned activation transition for the managed
@@ -666,6 +679,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	authH := &devicetrust.AuthHandler{
 		Challenges:  challengeStore,
 		Sessions:    sessionMgr,
+		Identity:    hostIdentity,
+		Registry:    deviceRegistry,
 		RateLimiter: devicetrust.NewChallengeRateLimiter(devicetrust.RateLimiterConfig{}),
 		Audit:       audit,
 	}
@@ -789,7 +804,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	}
 
 	// 3. Telemetry service owns the state machine and approval detection.
-	telemetry := term.NewTelemetryService(pushN, approvals, transcriptSvc)
+	telemetry, err := term.NewTelemetryService(authorizer, pushN, approvals, transcriptSvc)
+	if err != nil {
+		return nil, err
+	}
 	telemetry.SetDeliveryGate(deliveryGate)
 	h.Telemetry = telemetry
 	// S1: the Delete path clears the agent-activity store (owned by telemetry).
@@ -840,7 +858,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 func (a *App) Run(ctx context.Context) error {
 	// M2.5-1: the persistent host identity and device registry were constructed
 	// before any mutation-owning service in NewAppWithDeps.
-	a.mutationAuthorizer.bind(a.deviceRegistry)
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
 	}
@@ -857,15 +874,6 @@ func (a *App) Run(ctx context.Context) error {
 	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
 	// 0600 socket can revoke a device and read the redacted audit trail.
 	term.SetDeviceAdminContext(a.sessionMgr, a.audit)
-	// Late wiring: HostIdentity is needed by ticket binding in HandleWS paths.
-	if a.handlers != nil {
-		a.handlers.HostIdentity = a.hostIdentity
-	}
-	// Wire the host identity + device registry into the auth handler.
-	if a.authHandler != nil {
-		a.authHandler.Identity = a.hostIdentity
-		a.authHandler.Registry = a.deviceRegistry
-	}
 
 	// 3. Start background resources.
 	telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())

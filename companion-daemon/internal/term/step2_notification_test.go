@@ -17,7 +17,7 @@ import (
 // TestIngestReturn_NewAdmittedReturnsID verifies Ingest returns the ID
 // of a newly admitted actionable approval.
 func TestIngestReturn_NewAdmittedReturnsID(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	in := ApprovalIngest{
 		SessionID: "codex:s1", LaunchGen: 7, StreamGen: 3,
 		Provider: "codex", Version: "0.144.1",
@@ -37,7 +37,7 @@ func TestIngestReturn_NewAdmittedReturnsID(t *testing.T) {
 // TestIngestReturn_IdenticalReofferReturnsEmpty verifies an idempotent
 // re-offer returns empty from Ingest.
 func TestIngestReturn_IdenticalReofferReturnsEmpty(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	in := ApprovalIngest{
 		SessionID: "codex:s1", LaunchGen: 7, StreamGen: 3,
 		Provider: "codex", Version: "0.144.1",
@@ -63,7 +63,7 @@ func TestIngestReturn_IdenticalReofferReturnsEmpty(t *testing.T) {
 // non-actionable items are admitted to the store (so they are observable)
 // but would not trigger notification (Actionable=false).
 func TestIngestReturn_NonActionableAdmittedButNotNotifiable(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	in := ApprovalIngest{
 		SessionID: "codex:s1", LaunchGen: 7, StreamGen: 3,
 		Provider: "codex", Version: "0.144.1",
@@ -88,7 +88,7 @@ func TestIngestReturn_NonActionableAdmittedButNotNotifiable(t *testing.T) {
 // TestIngestReturn_MixedExistingNew_ReturnsNewOnly verifies that a batch
 // with existing A + new B returns only B from Ingest.
 func TestIngestReturn_MixedExistingNew_ReturnsNewOnly(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	makeItem := func(id string) ApprovalIngestItem {
 		return ApprovalIngestItem{
 			Approval:     agent.AgentApproval{ID: id, SessionID: "codex:s1", Kind: "approval"},

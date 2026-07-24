@@ -139,7 +139,7 @@ func buildDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 			}
 		}
 	}}
-	s.store = NewAuthoritativeApprovalStore()
+	s.store = testApprovalStore()
 	s.managed = newTestManagedService(s.launcher)
 	s.rec = newPumpRecorder()
 	s.managed.pumpObserver = s.rec.observe
@@ -149,12 +149,12 @@ func buildDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
 // launchTurn creates the managed session and starts one bound turn.
 func (s *deliverySession) launchTurn(t *testing.T) {
 	t.Helper()
-	id, err := s.managed.CreateAttached("")
+	id, err := s.managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	s.id = id
-	if err := s.managed.SubmitPrompt(id, 1, "run the build"); err != nil {
+	if err := s.managed.SubmitPrompt(id, 1, "run the build", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, s.managed.Registry(), id, ManagedStatusWorking)
@@ -326,7 +326,7 @@ func mustClaim(t *testing.T, store *AuthoritativeApprovalStore, sessionID, appro
 // the EXACT ingested bytes; mutating the caller's slice after ingestion does
 // not change them; the binding digest is of those exact bytes.
 func TestDeliveryMaterial_ClaimReturnsExactImmutableBytes(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	sid := codexAppServerAdapter + ":codex-app-m"
 	accept := acceptBytes("7")
 	orig := append([]byte(nil), accept...)
@@ -360,7 +360,7 @@ func TestDeliveryMaterial_ClaimReturnsExactImmutableBytes(t *testing.T) {
 // no-material digest of the same option.
 func TestDeliveryMaterial_DigestCoversMaterial(t *testing.T) {
 	digestFor := func(sid string, material []ApprovalDeliveryMaterial, actionable bool) string {
-		store := NewAuthoritativeApprovalStore()
+		store := testApprovalStore()
 		if !store.IngestObserved(ApprovalIngest{
 			SessionID: sid, LaunchGen: 1, StreamGen: 0,
 			Provider: codexAppServerAdapter, Version: certifiedCodexAuthorityVersion,
@@ -391,7 +391,7 @@ func TestDeliveryMaterial_DigestCoversMaterial(t *testing.T) {
 func TestDeliveryMaterial_InvalidRejectsItem(t *testing.T) {
 	sid := codexAppServerAdapter + ":codex-app-i"
 	base := func(actionable bool, mats []ApprovalDeliveryMaterial) bool {
-		store := NewAuthoritativeApprovalStore()
+		store := testApprovalStore()
 		return store.IngestObserved(ApprovalIngest{
 			SessionID: sid, LaunchGen: 1, StreamGen: 0,
 			Provider: codexAppServerAdapter, Version: certifiedCodexAuthorityVersion,
@@ -428,7 +428,7 @@ func TestDeliveryMaterial_InvalidRejectsItem(t *testing.T) {
 // TestDeliveryMaterial_SubstitutedDigestNeverCommits: a receipt whose
 // delivered digest is of substituted bytes never commits.
 func TestDeliveryMaterial_SubstitutedDigestNeverCommits(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	sid := codexAppServerAdapter + ":codex-app-s"
 	ingestActionable(t, store, sid, "codexas-1-7", "7")
 	c := mustClaim(t, store, sid, "codexas-1-7", "allow_once", "k1")
@@ -444,7 +444,7 @@ func TestDeliveryMaterial_SubstitutedDigestNeverCommits(t *testing.T) {
 // TestDeliveryMaterial_NeverInPublicDTOs: response bytes and schema versions
 // never reach ListSafe/List/managed rows.
 func TestDeliveryMaterial_NeverInPublicDTOs(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	sid := codexAppServerAdapter + ":codex-app-p"
 	ingestActionable(t, store, sid, "codexas-1-7", "7")
 	var surfaces []byte

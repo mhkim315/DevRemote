@@ -61,7 +61,7 @@ func (l *migrationLauncher) Spawn(context.Context, SpawnConfig) (LaunchResult, e
 }
 
 func TestPB5V1_TransportLookupMissingIsSafe(t *testing.T) {
-	o := NewOwnedPTYRuntime(nil, nil)
+	o := testOwnedPTYRuntime(nil, nil)
 	if tr, ok := o.Transport("controlled_pty:missing"); ok || tr != nil {
 		t.Fatal("missing transport must fail closed")
 	}
@@ -74,12 +74,12 @@ func TestPB5V1_ReplacementCleansOnlyPriorGeneration(t *testing.T) {
 		{Handle: &migrationHandle{reader: migrationReader{r1}}, Identity: LaunchIdentity{InstanceID: "one", StartedAt: time.Now()}, ProcessCleanup: c1},
 		{Handle: &migrationHandle{reader: migrationReader{r2}}, Identity: LaunchIdentity{InstanceID: "two", StartedAt: time.Now().Add(time.Nanosecond)}, ProcessCleanup: c2},
 	}}
-	o := NewOwnedPTYRuntime(l, nil)
+	o := testOwnedPTYRuntime(l, nil)
 	cfg := SpawnConfig{Name: "same", Executable: "true"}
-	if _, err := o.Create(context.Background(), cfg, "", ""); err != nil {
+	if _, err := o.Create(context.Background(), cfg, "", "", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := o.Create(context.Background(), cfg, "", ""); err != nil {
+	if _, err := o.Create(context.Background(), cfg, "", "", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	if c1.count() != 1 || c2.count() != 0 {
@@ -93,8 +93,8 @@ func TestPB5V1_StopUsesTypedSignalAndWait(t *testing.T) {
 	r := make(chan struct{})
 	h := &migrationHandle{reader: migrationReader{r}}
 	c := &migrationCleanup{}
-	o := NewOwnedPTYRuntime(&migrationLauncher{results: []LaunchResult{{Handle: h, Identity: LaunchIdentity{InstanceID: "one", StartedAt: time.Now()}, ProcessCleanup: c}}}, nil)
-	id, err := o.Create(context.Background(), SpawnConfig{Name: "stop", Executable: "true"}, "", "")
+	o := testOwnedPTYRuntime(&migrationLauncher{results: []LaunchResult{{Handle: h, Identity: LaunchIdentity{InstanceID: "one", StartedAt: time.Now()}, ProcessCleanup: c}}}, nil)
+	id, err := o.Create(context.Background(), SpawnConfig{Name: "stop", Executable: "true"}, "", "", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

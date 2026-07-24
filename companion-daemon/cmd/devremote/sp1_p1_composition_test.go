@@ -137,12 +137,12 @@ func TestSP1P1_CompositionRequestToSafeDTO(t *testing.T) {
 	fl := &sp1FakeLauncher{}
 	f := newRemoteFixtureWith(t, nil, nil, func(cfg *Config, deps *Dependencies) {
 		cfg.EnableManagedCodex = true
-		deps.Managed = term.NewManagedCodexServiceForTest(fl, func() error { return nil })
+		deps.Managed = term.NewManagedCodexServiceForTest(fl, func() error { return nil }, testMutationAuthorizer{})
 	})
 	ownerPriv, ownerID := f.pairDevice(t, "owner-phone")
 	ownerToken := f.token(t, ownerID, ownerPriv)
 
-	sessionID, err := f.app.managed.CreateAttached("")
+	sessionID, err := f.app.managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("managed create: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSP1P1_CompositionRequestToSafeDTO(t *testing.T) {
 func TestSP2B_UnownedManagedServiceFailsAppCreation(t *testing.T) {
 	build := func(mutateSvc func(svc *term.ManagedCodexService)) error {
 		fl := &sp1FakeLauncher{}
-		svc := term.NewManagedCodexServiceForTest(fl, func() error { return nil })
+		svc := term.NewManagedCodexServiceForTest(fl, func() error { return nil }, testMutationAuthorizer{})
 		mutateSvc(svc)
 		deps := testDeps()
 		deps.Managed = svc
@@ -231,7 +231,7 @@ func TestSP2B_UnownedManagedServiceFailsAppCreation(t *testing.T) {
 	// (a) A runtime created before the app: the store is frozen and can
 	// never be configured — the App must not be built.
 	if err := build(func(svc *term.ManagedCodexService) {
-		if _, err := svc.CreateAttached(""); err != nil {
+		if _, err := svc.CreateAttached("", "test-device", 0); err != nil {
 			t.Fatalf("pre-create: %v", err)
 		}
 	}); err == nil {
@@ -241,7 +241,7 @@ func TestSP2B_UnownedManagedServiceFailsAppCreation(t *testing.T) {
 	// (b) A foreign pre-configured store: the app's canonical store cannot
 	// replace it — the App must not be built.
 	if err := build(func(svc *term.ManagedCodexService) {
-		if serr := svc.SetApprovalStore(term.NewApprovalStore()); serr != nil {
+		if serr := svc.SetApprovalStore(testApprovalStore()); serr != nil {
 			t.Fatalf("foreign configure: %v", serr)
 		}
 	}); err == nil {
@@ -251,7 +251,7 @@ func TestSP2B_UnownedManagedServiceFailsAppCreation(t *testing.T) {
 	// (c) A foreign pre-installed activation: the app neither owns the store
 	// nor the actionable capability — the App must not be built.
 	if err := build(func(svc *term.ManagedCodexService) {
-		if _, _, ierr := svc.InstallApprovalExecution(term.NewApprovalStore()); ierr != nil {
+		if _, _, ierr := svc.InstallApprovalExecution(testApprovalStore()); ierr != nil {
 			t.Fatalf("foreign install: %v", ierr)
 		}
 	}); err == nil {

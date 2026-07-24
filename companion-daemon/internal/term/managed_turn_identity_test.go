@@ -70,7 +70,7 @@ func TestManagedTurnIdentity_StaleCompletionInert(t *testing.T) {
 	id := resp["id"]
 
 	// Turn A: start, run, complete.
-	if err := managed.SubmitPrompt(id, 1, "prompt A"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "prompt A", "test-device", 0); err != nil {
 		t.Fatalf("prompt A: %v", err)
 	}
 	<-srv.handled // turn/start response emitted (wire order preserved)
@@ -80,7 +80,7 @@ func TestManagedTurnIdentity_StaleCompletionInert(t *testing.T) {
 	waitForStatus(t, managed.Registry(), id, ManagedStatusCompleted)
 
 	// Turn B starts and is working.
-	if err := managed.SubmitPrompt(id, 1, "prompt B"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "prompt B", "test-device", 0); err != nil {
 		t.Fatalf("prompt B: %v", err)
 	}
 	<-srv.handled
@@ -93,7 +93,7 @@ func TestManagedTurnIdentity_StaleCompletionInert(t *testing.T) {
 	if got, _ := managed.Registry().Get(id); got.NativeStatus != ManagedStatusWorking {
 		t.Fatalf("stale completion changed status to %s", got.NativeStatus)
 	}
-	if err := managed.SubmitPrompt(id, 1, "prompt C"); err == nil || !strings.Contains(err.Error(), "turn already active") {
+	if err := managed.SubmitPrompt(id, 1, "prompt C", "test-device", 0); err == nil || !strings.Contains(err.Error(), "turn already active") {
 		t.Fatalf("stale completion released the active turn: prompt C err = %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestManagedTurnIdentity_StaleCompletionInert(t *testing.T) {
 	// KNOWN-BAD CONTROL: the exact current turn id DOES complete the turn.
 	srv.inject("turn/completed", srv.turnParams("thread-T1", "turn-B"))
 	waitForStatus(t, managed.Registry(), id, ManagedStatusCompleted)
-	if err := managed.SubmitPrompt(id, 1, "prompt D"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "prompt D", "test-device", 0); err != nil {
 		t.Fatalf("exact completion did not release the turn: %v", err)
 	}
 }
@@ -139,7 +139,7 @@ func TestManagedTurnIdentity_ForeignStartedCannotFabricateWorking(t *testing.T) 
 	}
 
 	// With a claim bound to turn-X, a different turn's started is inert.
-	if err := managed.SubmitPrompt(id, 1, "prompt X"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "prompt X", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	<-srv.handled

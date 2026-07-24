@@ -163,16 +163,16 @@ func testCfg() ClaudeEntryConfig {
 
 func TestClaudeCreateDetachedAttestorFails(t *testing.T) {
 	attestor := &fakeClaudeAttestor{shouldFail: true}
-	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, attestor)
-	_, err := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, attestor)
+	_, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err == nil || !strings.Contains(err.Error(), "certify") {
 		t.Fatalf("expected certify error, got: %v", err)
 	}
 }
 
 func TestClaudeCreateDetachedLauncherError(t *testing.T) {
-	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
-	_, err := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
+	_, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err == nil {
 		t.Fatal("expected launch error")
 	}
@@ -180,11 +180,11 @@ func TestClaudeCreateDetachedLauncherError(t *testing.T) {
 
 func TestClaudeCreateDetachedSuccess(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	if err := svc.SetApprovalStore(NewApprovalStore()); err != nil {
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	if err := svc.SetApprovalStore(testApprovalStore()); err != nil {
 		t.Fatal(err)
 	}
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -201,11 +201,11 @@ func TestClaudeCreateDetachedSuccess(t *testing.T) {
 
 func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -258,8 +258,8 @@ func TestClaudeDeferredJoinFullIdentityMatch(t *testing.T) {
 
 func TestClaudeDeferredJoinMismatchedSessionID(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -279,8 +279,8 @@ func TestClaudeDeferredJoinMismatchedSessionID(t *testing.T) {
 
 func TestClaudeDeferredJoinMismatchedToolName(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -300,8 +300,8 @@ func TestClaudeDeferredJoinMismatchedToolName(t *testing.T) {
 
 func TestClaudeDeferredJoinMismatchedInputDigest(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -322,8 +322,8 @@ func TestClaudeDeferredJoinMismatchedInputDigest(t *testing.T) {
 
 func TestClaudeDuplicateToolUseID(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -342,8 +342,8 @@ func TestClaudeDuplicateToolUseID(t *testing.T) {
 
 func TestClaudeCapacityExhaustion(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -364,11 +364,11 @@ func TestClaudeCapacityExhaustion(t *testing.T) {
 
 func TestClaudeExitClearsPendingObservations(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -386,8 +386,8 @@ func TestClaudeExitClearsPendingObservations(t *testing.T) {
 
 func TestClaudeStopIdempotent(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	rec, _ := svc.Registry().Get(id)
 
 	if err := svc.Stop(id, rec.Epoch, "", 0); err != nil {
@@ -400,8 +400,8 @@ func TestClaudeStopIdempotent(t *testing.T) {
 
 func TestClaudeKillCleanup(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	rec, _ := svc.Registry().Get(id)
 
 	if err := svc.Kill(id, rec.Epoch, "", 0); err != nil {
@@ -416,8 +416,8 @@ func TestClaudeKillCleanup(t *testing.T) {
 
 func TestClaudeDeleteTerminalOnly(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	rec, _ := svc.Registry().Get(id)
 
 	if err := svc.Delete(id, rec.Epoch, "", 0); err == nil {
@@ -436,11 +436,11 @@ func TestClaudeDeleteTerminalOnly(t *testing.T) {
 
 func TestClaudeApprovalRecordNonActionable(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -541,8 +541,8 @@ func TestClaudeHookBridgeDecodeOversizedFields(t *testing.T) {
 func TestClaudeLaunchArgv(t *testing.T) {
 	var captured []string
 	launcher := &argvCapturingLauncher{argv: &captured}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	_, err := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	_, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,8 +558,8 @@ func TestClaudeLaunchArgv(t *testing.T) {
 
 func TestClaudeShutdownCleansUp(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	ctx := context.Background()
 	svc.Shutdown(ctx)
 	svc.mu.Lock()
@@ -586,8 +586,8 @@ func TestClaudeStreamDeferredParsing(t *testing.T) {
 
 func TestClaudeProcessLineSkipsNonResult(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	id, _ := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -606,8 +606,8 @@ func TestClaudeProcessLineSkipsNonResult(t *testing.T) {
 
 func TestClaudeHookSettingsSchema(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	_, err := svc.CreateDetached("/tmp")
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	_, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -646,11 +646,11 @@ func TestClaudeHookSettingsSchema(t *testing.T) {
 
 func TestClaudePumpEOFExit(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	store := NewApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -754,11 +754,11 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 	clockNow = func() time.Time { return base }
 
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -852,11 +852,11 @@ func TestClaudeTimeoutExpiry(t *testing.T) {
 
 func TestClaudeActiveApprovalCapacity(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -905,11 +905,11 @@ func TestClaudeEntropyFailure(t *testing.T) {
 	entropyReader = &failingReader{}
 
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -949,11 +949,11 @@ func TestClaudeEntropyFailure(t *testing.T) {
 // which invalidates all active approvals and clears pending state.
 func TestClaudeStopInvalidatesApprovals(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1005,7 +1005,7 @@ func TestClaudeIPCComposition(t *testing.T) {
 	defer clientConn.Close()
 
 	launcher := &fakeClaudeLauncher{}
-	svc := NewManagedClaudeService(ClaudeEntryConfig{
+	svc := testManagedClaudeService(ClaudeEntryConfig{
 		Bin:              "claude",
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
@@ -1066,11 +1066,11 @@ func TestClaudeIPCUnavailable(t *testing.T) {
 // SupersedeRuntime and rejects the old StreamGen=0 ingest.
 func TestClaudeStopJoinRace(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1104,11 +1104,11 @@ func TestClaudeStopJoinRace(t *testing.T) {
 // append. Uses postIngestHook barrier at the exact defect window.
 func TestClaudeReverseRace(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1165,8 +1165,8 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	cfg := PinnedClaudeConfigWithDigest(digest)
 	cfg.Bin = cfg.PinnedPath
 
-	svc := NewManagedClaudeService(cfg, nil, nil)
-	store := NewApprovalStore()
+	svc := testManagedClaudeService(cfg, nil, nil)
+	store := testApprovalStore()
 	svc.SetApprovalStore(store)
 
 	// Start a real IPC server on a temp socket.
@@ -1259,14 +1259,14 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 // TestClaudeReservationRollback_LauncherFailure verifies that a failed launch
 // after successful Store reservation rolls back the slot.
 func TestClaudeReservationRollback_LauncherFailure(t *testing.T) {
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
 
 	before := store.Len()
-	_, err := svc.CreateDetached("/tmp")
+	_, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err == nil {
 		t.Fatal("expected launch error")
 	}
@@ -1282,14 +1282,14 @@ func TestClaudeReservationRollback_LauncherFailure(t *testing.T) {
 // TestClaudeReservationRollback_RepeatedFailureDoesNotExhaustCapacity verifies
 // that repeated launch failures do not permanently consume Store slots.
 func TestClaudeReservationRollback_RepeatedFailureDoesNotExhaustCapacity(t *testing.T) {
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), &failingLauncher{}, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
 
 	for i := 0; i < 10; i++ {
-		_, err := svc.CreateDetached("/tmp")
+		_, err := svc.CreateDetached("/tmp", "test-device", 0)
 		if err == nil {
 			t.Fatal("expected launch error")
 		}
@@ -1304,13 +1304,13 @@ func TestClaudeReservationRollback_RepeatedFailureDoesNotExhaustCapacity(t *test
 // a successful launch retains its Store slot (not rolled back).
 func TestClaudeReservationRollback_SuccessfulTombstoneRetained(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -1340,12 +1340,12 @@ func TestClaudeReservationRollback_SuccessfulTombstoneRetained(t *testing.T) {
 
 func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1392,12 +1392,12 @@ func TestC2DB_IdentityPreservedAtJoin(t *testing.T) {
 
 func TestC2DB_IdentityClearedOnTerminate(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1431,12 +1431,12 @@ func TestC2DB_IdentityClearedOnTerminate(t *testing.T) {
 
 func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1476,12 +1476,12 @@ func TestC2DB_IdentityClearedOnTimeout(t *testing.T) {
 
 func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1519,7 +1519,7 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 		OptionID:       "allow_once",
 		DeliverySchema: claudeDecisionSchemaV1,
 	}
-	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(svc.coordinator, "cccccccccccccccccccccccccccccccc", binding)
 	if !svc.coordinator.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1558,12 +1558,12 @@ func TestC2DB_ReserveEntryFromPreservedIdentity(t *testing.T) {
 
 func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1586,7 +1586,7 @@ func TestC2DB_MismatchBlocksDelivery(t *testing.T) {
 		OptionID:       "allow_once",
 		DeliverySchema: claudeDecisionSchemaV1,
 	}
-	handle, ok := svc.coordinator.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(svc.coordinator, "cccccccccccccccccccccccccccccccc", binding)
 	if !svc.coordinator.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1625,12 +1625,12 @@ func TestC2DB_PostIngestTerminationClearsIdentity(t *testing.T) {
 	// B2 fix: prove that identity is removed when postIngestHook triggers
 	// terminate between Store admission and active append.
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	svc.SetApprovalStore(store)
 	defer launcher.closeStream()
 
-	id, _ := svc.CreateDetached("/tmp")
+	id, _ := svc.CreateDetached("/tmp", "test-device", 0)
 	svc.mu.Lock()
 	rt := svc.runtimes[id]
 	svc.mu.Unlock()
@@ -1902,7 +1902,7 @@ func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInpu
 	binding := testBinding(aid, psid)
 	binding.OptionID = "deny"
 	binding.DeliverySchema = claudeDecisionSchemaV1
-	handle, ok := c.ReserveEntry("cccccccccccccccccccccccccccccccc", binding)
+	handle, ok := testReserveEntry(c, "cccccccccccccccccccccccccccccccc", binding)
 	if !c.BindResumeProcess("cccccccccccccccccccccccccccccccc", handle.ResumeNonce, 1) {
 		t.Fatal("BindResumeProcess failed")
 	}
@@ -1919,7 +1919,7 @@ func advanceToDecisionWritten(t *testing.T, c *claudeResumeCoordinator, toolInpu
 }
 
 func TestDenialBinding_EvidenceEventWitnessed(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
@@ -1945,7 +1945,7 @@ func TestDenialBinding_EvidenceEventWitnessed(t *testing.T) {
 }
 
 func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	handle, sid, tuid, tn, dig, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
@@ -1974,7 +1974,7 @@ func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
 	}
 	// Known-bad control: calling MarkWitnessed directly with the STORED digest
 	// accepts. This proves the decoder's recomputation is the enforcing boundary.
-	c2 := NewClaudeResumeCoordinator()
+	c2 := testClaudeCoordinator()
 	handle2, sid2, tuid2, tn2, _, rt2 := advanceToDecisionWritten(t, c2, `{"command":"x"}`)
 	// Use the stored digest dig (parameter) — not a recomputed one.
 	mr := c2.MarkWitnessed(handle2.ClaimToken, WitnessPermissionDenials,
@@ -1986,7 +1986,7 @@ func TestDenialBinding_MutatedInputFailsWitness(t *testing.T) {
 }
 
 func TestDenialBinding_DuplicateBoundTUIDCancels(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
@@ -2013,7 +2013,7 @@ func TestDenialBinding_DuplicateBoundTUIDCancels(t *testing.T) {
 }
 
 func TestDenialBinding_WrongSessionAnomalyCancels(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
@@ -2040,7 +2040,7 @@ func TestDenialBinding_WrongSessionAnomalyCancels(t *testing.T) {
 }
 
 func TestDenialBinding_MalformedLineCancelsActiveEntry(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	handle, sid, tuid, tn, _, rt := advanceToDecisionWritten(t, c, `{"command":"x"}`)
 	runtime := &claudeManagedRuntime{
 		coordinator: c,
@@ -2066,7 +2066,7 @@ func TestDenialBinding_MalformedLineCancelsActiveEntry(t *testing.T) {
 }
 
 func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	rt := &claudeManagedRuntime{
 		coordinator: c,
 		resumeCtx:   nil, // C1D observation runtime
@@ -2085,14 +2085,14 @@ func TestDenialBinding_C1DRuntimeWithNoResumeCtxDoesNotWitness(t *testing.T) {
 func p2aCreateRuntime(t *testing.T) (*ManagedClaudeService, *AuthoritativeApprovalStore, *claudeManagedRuntime, string) {
 	t.Helper()
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatalf("SetApprovalStore: %v", err)
 	}
 	t.Cleanup(func() { launcher.closeStream() })
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -2453,7 +2453,7 @@ func TestP2A_CatalogIDNotReconstructableFromDigest(t *testing.T) {
 }
 
 func TestP2A_IdentityLookupIsDefensiveCopy(t *testing.T) {
-	c := NewClaudeResumeCoordinator()
+	c := testClaudeCoordinator()
 	_, sid, tuid, tn, dig, psid, rt := testIdentity()
 
 	if !c.ReserveIdentity("approval-1", sid, tuid, tn, dig, "claude.bash.approval_probe.v1", psid, rt) {
@@ -2641,13 +2641,13 @@ func TestP2A_RealHookDigestCrossCheckPreservesCatalogID(t *testing.T) {
 	// through to deferred join — the selectCatalogActionID helper is
 	// integrated in handleHook.
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatalf("SetApprovalStore: %v", err)
 	}
 	defer launcher.closeStream()
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -3127,7 +3127,7 @@ func TestP2B_ValidCatalogBinding(t *testing.T) {
 func TestP2B_ForgedCatalogID_StoreRejects(t *testing.T) {
 	// Direct Store ingest with forged catalog ID + wrong provider.
 	// The Store must normalize it to empty.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:claude-test-forged"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3165,7 +3165,7 @@ func TestP2B_ForgedCatalogID_StoreRejects(t *testing.T) {
 }
 
 func TestP2B_ForgedCatalogID_WrongVersion(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:claude-test-wrongver"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3224,7 +3224,7 @@ func TestP2B_RecordCatalogActionID_Empty(t *testing.T) {
 	// after the Store normalizes an invalid {provider, version, ID} tuple.
 	// The DTO projector also validates the tuple, so a DTO-only check
 	// cannot distinguish Store normalization from projector rejection.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:test-record-empty"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3268,7 +3268,7 @@ func TestP2B_RecordCatalogActionID_Empty(t *testing.T) {
 }
 
 func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:test-reprov"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3331,7 +3331,7 @@ func TestP2B_SameIDReprovisionDoesNotChangeMetadata(t *testing.T) {
 }
 
 func TestP2B_StaleGenerationDoesNotRestoreCatalogSummary(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:test-stale"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3392,7 +3392,7 @@ func TestP2B_StaleGenerationDoesNotRestoreCatalogSummary(t *testing.T) {
 }
 
 func TestP2B_ForgedProviderShowsExactGenericSummary(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:test-exact-summary"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 
@@ -3421,7 +3421,7 @@ func TestP2B_ForgedProviderShowsExactGenericSummary(t *testing.T) {
 }
 
 func TestP2B_RawSentinelsNeverInStoreOrDTO(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	id := "claude_headless:test-privacy-store"
 	store.InstallRuntimeGeneration(id, 1, 0, "reserved")
 

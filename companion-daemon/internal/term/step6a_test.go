@@ -16,9 +16,9 @@ func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 	firstDone, secondDone := make(chan struct{}), make(chan struct{})
 	firstCleanup, secondCleanup := &migrationCleanup{}, &migrationCleanup{}
 	launcher := &migrationLauncher{results: []LaunchResult{step6aResult("one", firstDone, firstCleanup), step6aResult("two", secondDone, secondCleanup)}}
-	owned := NewOwnedPTYRuntime(launcher, transcript.NewService(transcript.DefaultStoreConfig()))
+	owned := testOwnedPTYRuntime(launcher, transcript.NewService(transcript.DefaultStoreConfig()))
 	cfg := SpawnConfig{Name: "step6a-test", Executable: "sleep", Args: []string{"10"}}
-	id, err := owned.Create(context.Background(), cfg, "shell", "step6a-test")
+	id, err := owned.Create(context.Background(), cfg, "shell", "step6a-test", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestStep6a_ReplacementCapturesOldRecorder(t *testing.T) {
 	if !ok || first.recorder == nil {
 		t.Fatal("first V1 launch missing recorder")
 	}
-	if _, err := owned.Create(context.Background(), cfg, "shell", "step6a-test"); err != nil {
+	if _, err := owned.Create(context.Background(), cfg, "shell", "step6a-test", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	second, ok := owned.Get(id)
@@ -47,14 +47,14 @@ func TestStep6a_RollbackCleanupIsInstanceGuarded(t *testing.T) {
 	firstDone, secondDone := make(chan struct{}), make(chan struct{})
 	firstCleanup, secondCleanup := &migrationCleanup{}, &migrationCleanup{}
 	launcher := &migrationLauncher{results: []LaunchResult{step6aResult("old", firstDone, firstCleanup), step6aResult("new", secondDone, secondCleanup)}}
-	owned := NewOwnedPTYRuntime(launcher, nil)
+	owned := testOwnedPTYRuntime(launcher, nil)
 	cfg := SpawnConfig{Name: "step6a-rb", Executable: "sleep", Args: []string{"10"}}
-	id, err := owned.Create(context.Background(), cfg, "shell", "step6a-rb")
+	id, err := owned.Create(context.Background(), cfg, "shell", "step6a-rb", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	old, _ := owned.Get(id)
-	if _, err := owned.Create(context.Background(), cfg, "shell", "step6a-rb"); err != nil {
+	if _, err := owned.Create(context.Background(), cfg, "shell", "step6a-rb", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := owned.Get(id)
@@ -72,8 +72,8 @@ func TestStep6a_RollbackProof(t *testing.T) {
 	done := make(chan struct{})
 	cleanup := &migrationCleanup{}
 	launcher := &migrationLauncher{results: []LaunchResult{{Handle: &migrationHandle{reader: migrationReader{done}}, Identity: LaunchIdentity{InstanceID: "bad", StartedAt: time.Now()}, ProcessCleanup: cleanup}}}
-	owned := NewOwnedPTYRuntime(launcher, nil)
-	_, err := owned.Create(context.Background(), SpawnConfig{Name: "step6a-rbproof", Executable: "sleep"}, "shell", "rollback")
+	owned := testOwnedPTYRuntime(launcher, nil)
+	_, err := owned.Create(context.Background(), SpawnConfig{Name: "step6a-rbproof", Executable: "sleep"}, "shell", "rollback", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

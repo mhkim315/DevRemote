@@ -86,7 +86,7 @@ func TestManagedCodexOperationalHooksPostCommitAndRedacted(t *testing.T) {
 		}
 	}}
 	managed := newTestManagedService(launcher)
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	if err := managed.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +94,11 @@ func TestManagedCodexOperationalHooksPostCommitAndRedacted(t *testing.T) {
 	if err := managed.SetOperationalEventSink(sink); err != nil {
 		t.Fatal(err)
 	}
-	sessionID, err := managed.CreateAttached("")
+	sessionID, err := managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := managed.SubmitPrompt(sessionID, 1, "prompt-"+sentinel); err != nil {
+	if err := managed.SubmitPrompt(sessionID, 1, "prompt-"+sentinel, "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	waitForStatus(t, managed.Registry(), sessionID, ManagedStatusWorking)
@@ -175,7 +175,7 @@ func TestManagedCodexOperationalSinkPanicCannotChangeLifecycle(t *testing.T) {
 	if err := managed.SetOperationalEventSink(panicOperationalSink{}); err != nil {
 		t.Fatal(err)
 	}
-	sessionID, err := managed.CreateAttached("")
+	sessionID, err := managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create changed by sink panic: %v", err)
 	}

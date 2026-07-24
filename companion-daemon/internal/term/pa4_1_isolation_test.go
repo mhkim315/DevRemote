@@ -87,8 +87,8 @@ func TestPA4_1_CatalogRowCarriesCapabilitiesAndLifecycle(t *testing.T) {
 	}
 
 	// Lifecycle integration: non-nil lifecycle without entry → empty.
-	owned := NewOwnedPTYRuntime(&migrationLauncher{}, nil)
-	lifecycle := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(&migrationLauncher{}, nil)
+	lifecycle := testLifecycleService(owned, nil)
 	outNoEntry := appendCatalogRows(nil, cat, lifecycle, nil)
 	if outNoEntry[0].LifecycleState != "" {
 		t.Errorf("LifecycleState=%q without entry, want empty", outNoEntry[0].LifecycleState)
@@ -196,8 +196,8 @@ func TestPA4_1_DefaultConfigEnforcesIsolation(t *testing.T) {
 		Epoch: 1, CreatedAt: time.Now(), NativeStatus: "running",
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
-	owned := NewOwnedPTYRuntime(&migrationLauncher{}, nil)
-	lifecycle := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(&migrationLauncher{}, nil)
+	lifecycle := testLifecycleService(owned, nil)
 	h := &Handlers{
 		Catalog: cat, Lifecycle: lifecycle,
 		Transcript: transcript.NewService(transcript.DefaultStoreConfig()),

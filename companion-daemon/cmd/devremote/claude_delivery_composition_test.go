@@ -96,8 +96,8 @@ func newProviderSim(t *testing.T) (*compFakeLauncher, *term.ManagedClaudeService
 		PinnedPath:   "/tmp/fake-claude",
 		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
-	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
-	store := term.NewApprovalStore()
+	svc := testManagedClaudeService(cfg, launcher, &compFakeAttestor{})
+	store := testApprovalStore()
 	svc.SetApprovalStore(store)
 	launcher.resumeWCh = make(chan struct{})
 	return launcher, svc, store
@@ -168,7 +168,7 @@ func firePostToolHook(t *testing.T, url, sid, tuid, tn, inputJSON string) {
 func makeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedClaudeService, *term.AuthoritativeApprovalStore, term.ClaimResult, term.RuntimeRef, string, string, string) {
 	t.Helper()
 	launcher, svc, store := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -364,7 +364,7 @@ func fireInitialHook(t *testing.T, url, sid, tuid, tn, inputJSON string) {
 
 func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
 	launcher, svc, _ := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestClaudeDelivery_ExitWithoutJoinedDeferredClearsIdentity(t *testing.T) {
 
 func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 	launcher, svc, _ := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 
 func TestClaudeDelivery_DeferredExitThenKillClearsIdentity(t *testing.T) {
 	launcher, svc, _ := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestClaudeDelivery_DeferredExitThenKillClearsIdentity(t *testing.T) {
 
 func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 	launcher, svc, _ := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func bytesEq(a, b []byte) bool {
 func catalogMakeSetup(t *testing.T, optionID string) (*compFakeLauncher, *term.ManagedClaudeService, *term.AuthoritativeApprovalStore, term.ClaimResult, term.RuntimeRef, string, string, string) {
 	t.Helper()
 	launcher, svc, store := newProviderSim(t)
-	sid, err := svc.CreateDetached("/tmp")
+	sid, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
 		PinnedPath:   "/tmp/fake-claude",
 		PinnedDigest: "0000000000000000000000000000000000000000000000000000000000000000",
 	}
-	svc := term.NewManagedClaudeService(cfg, launcher, &compFakeAttestor{})
+	svc := testManagedClaudeService(cfg, launcher, &compFakeAttestor{})
 	t.Cleanup(func() {
 		for _, p := range launcher.procs {
 			p.Kill()
@@ -1022,7 +1022,23 @@ func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
 		svc.Shutdown(context.Background())
 	})
 
-	app, err := NewAppWithDeps(claudeAppConfig(), Dependencies{ManagedClaude: svc})
+	trustDir := t.TempDir()
+	hostIdentity, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: trustDir + "/host.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceRegistry, err := devicetrust.NewDeviceRegistry(&devicetrust.FileDeviceStore{Path: trustDir + "/devices.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, devicePub, _ := devicetrust.GenKeypair(t)
+	appcompDevice, err := deviceRegistry.Add(devicePub, "appcomp-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewAppWithDeps(claudeAppConfig(), Dependencies{
+		ManagedClaude: svc, HostIdentity: hostIdentity, DeviceRegistry: deviceRegistry,
+	})
 	if err != nil {
 		t.Fatalf("NewAppWithDeps: %v", err)
 	}
@@ -1034,7 +1050,7 @@ func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
 	}
 
 	// RuntimeOf resolves only Claude-prefixed sessions.
-	id, err := app.managedClaude.CreateDetached("/tmp")
+	id, err := app.managedClaude.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -1085,7 +1101,7 @@ func TestApp_ClaudeOnly_InstalledComposition(t *testing.T) {
 	if c := app.handlers.Approvals.ClaimForExecution(term.ClaimRequest{
 		SessionID: id, ApprovalID: aid, OptionID: "allow_once",
 		Runtime:        rtRef,
-		Requester:      term.RequesterContext{DeviceID: "d", HostID: "h", BearerSessionID: "b", BootID: "bt", Permissions: []string{devicetrust.PermTerminalInput}},
+		Requester:      term.RequesterContext{DeviceID: appcompDevice.DeviceID, DeviceEpoch: uint64(appcompDevice.Epoch), HostID: hostIdentity.HostID, BearerSessionID: "b", BootID: "bt", Permissions: []string{devicetrust.PermTerminalInput}},
 		IdempotencyKey: "appcomp.allow",
 	}); c.Outcome != term.ClaimGranted {
 		t.Fatalf("ClaimForExecution: %s", c.Outcome)

@@ -13,8 +13,8 @@ import (
 // Managed lifecycle routes exclusively through OwnedPTYRuntime and
 // ManagedRuntimeCatalog for provider-owned runtimes.
 func TestPA4_2_LifecycleServiceHasNoRegistryDependency(t *testing.T) {
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
-	svc := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	svc := testLifecycleService(owned, nil)
 
 	// Stop routes to OwnedPTYRuntime for nonexistent sessions — returns error, not panic.
 	_, err := svc.Stop(context.Background(), "controlled_pty:nonexistent", "", 0)
@@ -46,8 +46,8 @@ func TestPA4_2_LifecycleStopRoutesThroughProviderOwner(t *testing.T) {
 	})
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
-	svc := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	svc := testLifecycleService(owned, nil)
 
 	// Wire managed owners — catalog is the sole read path for Epoch derivation.
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
@@ -87,8 +87,8 @@ func TestPA4_2_LifecycleDeleteClearsTranscript(t *testing.T) {
 	codexReg.MarkExited(sid, 1)
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
-	svc := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	svc := testLifecycleService(owned, nil)
 
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
 	svc.WireManagedOwners(cat, fakeOwner, nil)
@@ -119,7 +119,7 @@ func TestPA4_2_LifecycleDeleteClearsTranscript(t *testing.T) {
 func TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter(t *testing.T) {
 	// OwnedPTYRuntime with nil adapter — proves lifecycle doesn't call
 	// adapter methods for managed provider sessions.
-	svc := NewLifecycleService(nil, nil)
+	svc := testLifecycleService(nil, nil)
 
 	codexReg := NewManagedSessionRegistry(10)
 	_ = codexReg.Register(ManagedSessionRecord{
@@ -145,8 +145,8 @@ func TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter(t *testing.T) {
 // unknown/non-managed session IDs return not-found without falling
 // back to Registry or legacy discovery.
 func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
-	svc := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	svc := testLifecycleService(owned, nil)
 
 	// Empty catalog — no managed sessions.
 	cat := NewManagedRuntimeCatalog(nil, nil, nil, nil, "", "")
@@ -171,7 +171,7 @@ func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
 func TestPA4_2_ApprovalStoreHasNoRegistryDependency(t *testing.T) {
 	// AuthoritativeApprovalStore is constructed with only a store config.
 	// It has no Registry, adapter, or discovery fields.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if store == nil {
 		t.Fatal("NewApprovalStore returned nil")
 	}

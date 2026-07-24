@@ -73,15 +73,16 @@ type activeApproval struct {
 // ── Managed runtime ──
 
 type claudeManagedRuntime struct {
-	sessionID string
-	runtimeID string
-	epoch     int64
-	proc      ManagedProcess
-	reg       *ManagedSessionRegistry
-	scanner   *bufio.Scanner
-	exited    chan struct{}
-	exitOnce  sync.Once
-	cwd       string // original validated cwd, bound for resume
+	authorizer devicetrust.MutationAuthorizer
+	sessionID  string
+	runtimeID  string
+	epoch      int64
+	proc       ManagedProcess
+	reg        *ManagedSessionRegistry
+	scanner    *bufio.Scanner
+	exited     chan struct{}
+	exitOnce   sync.Once
+	cwd        string // original validated cwd, bound for resume
 
 	bridge  *claudeHookBridge
 	hookDir string
@@ -141,10 +142,11 @@ type claudeManagedRuntime struct {
 	finishOnce     sync.Once
 }
 
-func newClaudeManagedRuntime(proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
+func newClaudeManagedRuntime(authorizer devicetrust.MutationAuthorizer, proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry, bridge *claudeHookBridge, hookDir string) *claudeManagedRuntime {
 	sc := bufio.NewScanner(proc.Stdout())
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	rt := &claudeManagedRuntime{
+		authorizer:          authorizer,
 		proc:                proc,
 		epoch:               epoch,
 		reg:                 reg,
@@ -929,7 +931,7 @@ type ManagedClaudeService struct {
 	createBarrier func(stage string)
 
 	// 9.4-D: mandatory mutation authorizer. Nil not permitted.
-	Authorizer devicetrust.MutationAuthorizer
+	authorizer devicetrust.MutationAuthorizer
 }
 
 func (s *ManagedClaudeService) barrier(stage string) {
@@ -938,13 +940,9 @@ func (s *ManagedClaudeService) barrier(stage string) {
 	}
 }
 
-func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, attestor ClaudeAttestor, authorizers ...devicetrust.MutationAuthorizer) *ManagedClaudeService {
-	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
-	if len(authorizers) > 0 {
-		if authorizers[0] == nil {
-			return nil
-		}
-		authorizer = authorizers[0]
+func NewManagedClaudeService(authorizer devicetrust.MutationAuthorizer, cfg ClaudeEntryConfig, launcher ManagedLauncher, attestor ClaudeAttestor) (*ManagedClaudeService, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("managed claude mutation authorizer is required")
 	}
 	if launcher == nil {
 		launcher = &execLauncherWithDir{}
@@ -960,36 +958,30 @@ func NewManagedClaudeService(cfg ClaudeEntryConfig, launcher ManagedLauncher, at
 		reg:              NewManagedSessionRegistry(maxClaudeSessions),
 		leases:           make(map[*inflightCreate]struct{}),
 		runtimes:         make(map[string]*claudeManagedRuntime),
-		coordinator:      NewClaudeResumeCoordinator(),
-		Authorizer:       authorizer,
+		coordinator:      nil,
+		authorizer:       authorizer,
 	}
+	coordinator, err := NewClaudeResumeCoordinator(authorizer)
+	if err != nil {
+		return nil, err
+	}
+	s.coordinator = coordinator
 	s.leaseCond = sync.NewCond(&s.mu)
-	return s
+	return s, nil
 }
 
-func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAttestor) *ManagedClaudeService {
-	return NewManagedClaudeService(ClaudeEntryConfig{
+func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAttestor, authorizer devicetrust.MutationAuthorizer) *ManagedClaudeService {
+	s, err := NewManagedClaudeService(authorizer, ClaudeEntryConfig{
 		Bin:              "/pinned/test/claude",
 		Version:          "2.1.209",
 		AuthorityVersion: "2.1.209",
 		PinnedPath:       "/pinned/test/claude",
 		PinnedDigest:     "0000000000000000000000000000000000000000000000000000000000000000",
 	}, launcher, attestor)
-}
-
-// SetMutationAuthorizer is a composition-only seam for a dependency-injected
-// service. Production services receive the authorizer in the constructor.
-func (s *ManagedClaudeService) SetMutationAuthorizer(authorizer devicetrust.MutationAuthorizer) error {
-	if authorizer == nil {
-		return fmt.Errorf("managed claude mutation authorizer is required")
+	if err != nil {
+		panic(err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closing || s.gen != 0 || len(s.runtimes) != 0 {
-		return fmt.Errorf("managed claude mutation authorizer cannot be changed after start")
-	}
-	s.Authorizer = authorizer
-	return nil
+	return s
 }
 
 func (s *ManagedClaudeService) Registry() *ManagedSessionRegistry { return s.reg }
@@ -1079,15 +1071,8 @@ func (s *ManagedClaudeService) eventStoreFor(sessionID string) (*managedEventSto
 
 // CreateDetached launches a Claude managed session. The child runs in the
 // requested cwd directory.
-func (s *ManagedClaudeService) CreateDetached(cwd string, authorizations ...MutationAuthorization) (string, error) {
-	// Direct in-process callers are the explicit local path. Remote HTTP
-	// handlers pass a captured MutationAuthorization and therefore cannot omit
-	// the device/epoch binding.
-	authorization := MutationAuthorization{Authorizer: localMutationAuthorizer{}}
-	if len(authorizations) > 0 {
-		authorization = authorizations[0]
-	}
-	if err := authorization.authorize(devicetrust.IntentSessionCreate); err != nil {
+func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, deviceEpoch uint64) (string, error) {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
 		return "", err
 	}
 	if err := validateCWD(cwd); err != nil {
@@ -1212,7 +1197,7 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, authorizations ...Muta
 		rollback()
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
-	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
+	rt := newClaudeManagedRuntime(s.authorizer, proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = id
 	rt.runtimeID = launchCert.ProcessID
 	rt.cwd = cwd
@@ -1434,7 +1419,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		cancelEntry()
 		return nil, fmt.Errorf("managed claude service is shutting down")
 	}
-	rt := newClaudeManagedRuntime(proc, epoch, s.reg, bridge, hookDir)
+	rt := newClaudeManagedRuntime(s.authorizer, proc, epoch, s.reg, bridge, hookDir)
 	rt.sessionID = ctx.pokitSessionID
 	rt.runtimeID = launchCert.ProcessID
 	rt.cwd = cwd
@@ -1850,7 +1835,7 @@ func (s *ManagedClaudeService) claimTerminalIntent(
 		return nil, nil, nil, fmt.Errorf("stale session epoch")
 	}
 	// 9.4-D: atomic device authorization under s.mu before state change.
-	if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
 		return nil, nil, nil, err
 	}
 	rt.terminalIntent = true
@@ -1869,7 +1854,7 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64, deviceID st
 		return fmt.Errorf("managed claude session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
-	if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
 		s.mu.Unlock()
 		return err
 	}

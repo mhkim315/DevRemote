@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 // ── SP0.5-A fakes ──
@@ -85,8 +87,22 @@ func sp05InteractiveRequest() map[string]any {
 
 func newInteractiveService(t *testing.T, app *interactiveAppServer) (*ManagedCodexService, *fakeLauncher) {
 	t.Helper()
+	return newInteractiveServiceWithAuthorizer(t, app, testMutationAuthorizer{})
+}
+
+func newInteractiveServiceWithAuthorizer(t *testing.T, app *interactiveAppServer, authorizer devicetrust.MutationAuthorizer) (*ManagedCodexService, *fakeLauncher) {
+	t.Helper()
 	fl := &fakeLauncher{handler: app.handler()}
-	return newTestManagedService(fl), fl
+	service, err := NewManagedCodexService(authorizer, CodexAppServerEntryConfig{
+		Bin:              "/pinned/toolchain/node_modules/.bin/codex",
+		Version:          "codex-cli 0.144.1",
+		AuthorityVersion: certifiedCodexAuthorityVersion,
+	}, fl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.verify = func() error { return nil }
+	return service, fl
 }
 
 // attachClient dials handleManagedAttach through the real IPC connection
@@ -259,10 +275,10 @@ func TestManagedPrompt_SecondWhileActiveConflicts(t *testing.T) {
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id, epoch := resp["id"], int64(1)
 
-	if err := managed.SubmitPrompt(id, epoch, "first"); err != nil {
+	if err := managed.SubmitPrompt(id, epoch, "first", "test-device", 0); err != nil {
 		t.Fatalf("first prompt: %v", err)
 	}
-	if err := managed.SubmitPrompt(id, epoch, "second"); err == nil || !strings.Contains(err.Error(), "turn already active") {
+	if err := managed.SubmitPrompt(id, epoch, "second", "test-device", 0); err == nil || !strings.Contains(err.Error(), "turn already active") {
 		t.Fatalf("second prompt err = %v, want conflict", err)
 	}
 	// The fake consumes the first turn/start asynchronously — wait for the
@@ -277,7 +293,7 @@ func TestManagedPrompt_SecondWhileActiveConflicts(t *testing.T) {
 
 	close(gate) // finish the first turn
 	waitForStatus(t, managed.Registry(), id, ManagedStatusCompleted)
-	if err := managed.SubmitPrompt(id, epoch, "third"); err != nil {
+	if err := managed.SubmitPrompt(id, epoch, "third", "test-device", 0); err != nil {
 		t.Fatalf("post-completion prompt: %v", err)
 	}
 	deadline = time.Now().Add(2 * time.Second)
@@ -306,7 +322,7 @@ func TestManagedPrompt_BoundsFailClosed(t *testing.T) {
 		"two\nlines",
 	}
 	for i, text := range bad {
-		if err := managed.SubmitPrompt(id, 1, text); err == nil {
+		if err := managed.SubmitPrompt(id, 1, text, "test-device", 0); err == nil {
 			t.Fatalf("case %d accepted invalid prompt", i)
 		}
 	}
@@ -323,16 +339,16 @@ func TestManagedPrompt_WrongBindingZeroWrites(t *testing.T) {
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
 
-	if err := managed.SubmitPrompt("codex_app_server:nope", 1, "hello"); err == nil {
+	if err := managed.SubmitPrompt("codex_app_server:nope", 1, "hello", "test-device", 0); err == nil {
 		t.Fatal("unknown session accepted")
 	}
-	if err := managed.SubmitPrompt(id, 99, "hello"); err == nil || !strings.Contains(err.Error(), "stale") {
+	if err := managed.SubmitPrompt(id, 99, "hello", "test-device", 0); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("stale epoch err = %v", err)
 	}
 
 	fl.procs[0].Kill() // child dies
 	waitForStatus(t, managed.Registry(), id, ManagedStatusExited)
-	if err := managed.SubmitPrompt(id, 1, "hello"); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "hello", "test-device", 0); err == nil {
 		t.Fatal("closed session accepted a prompt")
 	}
 	if app.turnCount() != 0 {
@@ -362,7 +378,7 @@ func TestManagedAttach_DetachDoesNotKillRuntime(t *testing.T) {
 		t.Fatalf("record after detach = %+v ok=%v", rec, ok)
 	}
 	// The session still accepts a prompt after the viewer detached.
-	if err := managed.SubmitPrompt(id, 1, "still alive"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "still alive", "test-device", 0); err != nil {
 		t.Fatalf("post-detach prompt: %v", err)
 	}
 }

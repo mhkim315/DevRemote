@@ -35,16 +35,17 @@ func TestAuthProductionPath_UnavailableBeforePairing(t *testing.T) {
 
 	// Build the App through the real constructor but with no paired device.
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewApp(cfg)
+	app, err := NewAppWithDeps(cfg, Dependencies{HostIdentity: id, DeviceRegistry: reg})
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
+	app.authHandler.Identity = nil
 	// Before any device is paired, the auth endpoints return 503.
 	srv := httptest.NewServer(app.server.Handler)
 	defer srv.Close()
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"version": 1, "hostId": "x", "deviceId": "y",
+		"version": 1, "hostId": id.HostID, "deviceId": strings.Repeat("a", 64),
 		"clientNonce": hex.EncodeToString(make([]byte, 32)),
 	})
 	resp, _ := http.Post(srv.URL+"/api/device-auth/challenge", "application/json", bytes.NewReader(body))
@@ -65,7 +66,7 @@ func TestAuthProductionPath_ChallengeAndVerify(t *testing.T) {
 
 	// Build App with the device trust installed.
 	cfg := Config{InsecureLocalOnly: true}
-	app, err := NewApp(cfg)
+	app, err := NewAppWithDeps(cfg, Dependencies{HostIdentity: id, DeviceRegistry: reg})
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestRemoteMode_MemberCannotCreate(t *testing.T) {
 	}
 
 	cfg := Config{InsecureLocalOnly: false}
-	app, err := NewApp(cfg)
+	app, err := NewAppWithDeps(cfg, Dependencies{HostIdentity: id, DeviceRegistry: reg})
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -376,6 +377,8 @@ func TestRemoteWSTicketUpgradeAndBearerExpiry(t *testing.T) {
 	owner, _ := reg.Add(ownerPub, "owner")
 
 	deps := testDeps()
+	deps.HostIdentity = id
+	deps.DeviceRegistry = reg
 	deps.DeviceSessionConfig = &devicetrust.DeviceSessionManagerConfig{
 		Lifetime: 1200 * time.Millisecond, MaxSessions: 4, PurgeInterval: 50 * time.Millisecond,
 	}
@@ -526,6 +529,10 @@ func TestRemoteWSTicketFailsClosedWithoutHostIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
+	// Explicitly remove the host binding to exercise the fail-closed route.
+	app.hostIdentity = nil
+	app.handlers.HostIdentity = nil
+	app.authHandler.Identity = nil
 	app.sessionMgr.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
 		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
 	}

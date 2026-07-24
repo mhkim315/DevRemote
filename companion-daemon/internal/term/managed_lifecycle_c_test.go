@@ -47,7 +47,7 @@ func TestManagedStop_GracefulThenNonCurrent(t *testing.T) {
 	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("second stop not idempotent: %v", err)
 	}
-	if err := managed.SubmitPrompt(id, 1, "late"); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "late", "test-device", 0); err == nil {
 		t.Fatal("stopped session accepted a prompt")
 	}
 	if app.turnCount() != 0 {
@@ -168,7 +168,7 @@ func TestManagedDelete_TerminalOnly_ClearsData_LaterEventsInert(t *testing.T) {
 		t.Fatalf("duplicate delete err = %v", err)
 	}
 	// A deleted session accepts no prompt.
-	if err := managed.SubmitPrompt(id, 1, "late"); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "late", "test-device", 0); err == nil {
 		t.Fatal("deleted session accepted a prompt")
 	}
 }
@@ -182,7 +182,7 @@ func TestManagedLifecycle_PromptVsStopInterleavings(t *testing.T) {
 	managed, _, id := createInteractive(t, app)
 
 	// (a) prompt first: the turn is active when Stop arrives.
-	if err := managed.SubmitPrompt(id, 1, "long turn"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "long turn", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
@@ -194,7 +194,7 @@ func TestManagedLifecycle_PromptVsStopInterleavings(t *testing.T) {
 		t.Fatalf("record after stop-during-turn = %+v", rec)
 	}
 	// (b) prompt after stop: rejected, zero additional writes.
-	if err := managed.SubmitPrompt(id, 1, "after stop"); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "after stop", "test-device", 0); err == nil {
 		t.Fatal("post-stop prompt accepted")
 	}
 	if app.turnCount() != 1 {
@@ -210,7 +210,7 @@ func TestManagedLifecycle_PromptVsKill(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-C7", reply: "never", hold: gate}
 	managed, _, id := createInteractive(t, app)
 
-	if err := managed.SubmitPrompt(id, 1, "long turn"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "long turn", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
@@ -221,7 +221,7 @@ func TestManagedLifecycle_PromptVsKill(t *testing.T) {
 	if !rec.Exited {
 		t.Fatalf("record after kill-during-turn = %+v", rec)
 	}
-	if err := managed.SubmitPrompt(id, 1, "after kill"); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "after kill", "test-device", 0); err == nil {
 		t.Fatal("post-kill prompt accepted")
 	}
 	close(gate)
@@ -300,7 +300,7 @@ func TestManagedShutdown_DuringActiveTurn(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-C10", reply: "never", hold: gate}
 	managed, fl, id := createInteractive(t, app)
 
-	if err := managed.SubmitPrompt(id, 1, "long turn"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "long turn", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
@@ -338,7 +338,7 @@ func TestManagedLifecycle_ConcurrentRace(t *testing.T) {
 		wg.Add(4)
 		go func(n int) {
 			defer wg.Done()
-			_ = managed.SubmitPrompt(id, 1, fmt.Sprintf("p%d", n))
+			_ = managed.SubmitPrompt(id, 1, fmt.Sprintf("p%d", n), "test-device", 0)
 		}(i)
 		go func() {
 			defer wg.Done()

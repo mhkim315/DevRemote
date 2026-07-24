@@ -149,7 +149,7 @@ func (l *fakeLauncher) callCount() int {
 // no-op verifier (verify fail-closure is tested separately with a failing
 // verifier — the production verifier would exec the pinned binary).
 func newTestManagedService(l ManagedLauncher) *ManagedCodexService {
-	s := NewManagedCodexService(CodexAppServerEntryConfig{
+	s := testManagedCodexService(CodexAppServerEntryConfig{
 		Bin:              "/pinned/toolchain/node_modules/.bin/codex",
 		Version:          "codex-cli 0.144.1",
 		AuthorityVersion: certifiedCodexAuthorityVersion,
@@ -282,7 +282,7 @@ func TestManagedCreate_FailedVerify_NoChildNoSession(t *testing.T) {
 	managed := newTestManagedService(fl)
 	managed.verify = func() error { return fmt.Errorf("digest mismatch") }
 
-	if _, err := managed.CreateDetached(""); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if _, err := managed.CreateDetached("", "test-device", 0); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("err = %v, want verify failure", err)
 	}
 	if fl.callCount() != 0 {
@@ -303,7 +303,7 @@ func TestManagedCreate_FailedInitialize_KillsChildNoSession(t *testing.T) {
 	}}
 	managed := newTestManagedService(fl)
 
-	if _, err := managed.CreateDetached(""); err == nil || !strings.Contains(err.Error(), "initialize") {
+	if _, err := managed.CreateDetached("", "test-device", 0); err == nil || !strings.Contains(err.Error(), "initialize") {
 		t.Fatalf("err = %v, want initialize failure", err)
 	}
 	select {
@@ -324,7 +324,7 @@ func TestManagedCreate_HandshakeDeadline_KillsChildNoSession(t *testing.T) {
 	managed := newTestManagedService(fl)
 	managed.handshakeTimeout = 100 * time.Millisecond
 
-	if _, err := managed.CreateDetached(""); err == nil {
+	if _, err := managed.CreateDetached("", "test-device", 0); err == nil {
 		t.Fatal("expected handshake failure for a silent provider")
 	}
 	select {

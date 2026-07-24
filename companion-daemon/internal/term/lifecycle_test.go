@@ -31,9 +31,9 @@ func (a *lcAdapter) add(localID string) string {
 // seam uses the given adapter's registry.
 func lcService(t *testing.T, a *lcAdapter) *LifecycleService {
 	t.Helper()
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	owned.graceful = 200 * time.Millisecond
-	return NewLifecycleService(owned, nil)
+	return testLifecycleService(owned, nil)
 }
 
 // ── PA2c dispatch table: unknown/legacy fail closed, no Registry probe ──
@@ -186,14 +186,14 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 // realOwned builds an OwnedPTYRuntime over the production V1 launcher.
 func realOwned(t *testing.T) *OwnedPTYRuntime {
 	t.Helper()
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 400 * time.Millisecond
 	return owned
 }
 
 func realService(t *testing.T) *LifecycleService {
 	t.Helper()
-	return NewLifecycleService(realOwned(t), nil)
+	return testLifecycleService(realOwned(t), nil)
 }
 
 // realManaged launches a real controlled-PTY runtime through the owner.
@@ -201,7 +201,7 @@ func realManaged(t *testing.T, svc *LifecycleService, shellCmd string) string {
 	t.Helper()
 	owned := svc.OwnedPTY()
 	cfg := SpawnConfig{Name: genLocalID("lc"), Executable: "/bin/sh", Args: []string{"-c", shellCmd}}
-	id, err := owned.Create(context.Background(), cfg, "", "test")
+	id, err := owned.Create(context.Background(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create real session: %v", err)
 	}

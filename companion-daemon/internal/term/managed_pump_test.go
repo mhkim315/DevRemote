@@ -108,7 +108,7 @@ func TestManagedPump_NativeEventsDriveWorkingThenCompleted(t *testing.T) {
 	rec := newPumpRecorder()
 	managed.pumpObserver = rec.observe
 
-	id, err := managed.CreateDetached("")
+	id, err := managed.CreateDetached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestManagedPump_ChildExitMarksExited_AndLateEventsInert(t *testing.T) {
 	fl := &fakeLauncher{handler: happyAppServer(tid)}
 	managed := newTestManagedService(fl)
 
-	id, err := managed.CreateDetached("")
+	id, err := managed.CreateDetached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestManagedShutdown_KillsChildrenAndClosesRegistry(t *testing.T) {
 	fl := &fakeLauncher{handler: happyAppServer("thread-SD")}
 	managed := newTestManagedService(fl)
 
-	id, err := managed.CreateDetached("")
+	id, err := managed.CreateDetached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -84,11 +84,11 @@ func newApprovalSessionWith(t *testing.T, store *AuthoritativeApprovalStore) *ap
 	rec := newPumpRecorder()
 	managed.pumpObserver = rec.observe
 
-	id, err := managed.CreateAttached("")
+	id, err := managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := managed.SubmitPrompt(id, 1, "run the build"); err != nil {
+	if err := managed.SubmitPrompt(id, 1, "run the build", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
@@ -105,7 +105,7 @@ func newApprovalSessionWith(t *testing.T, store *AuthoritativeApprovalStore) *ap
 
 func newApprovalSession(t *testing.T) *approvalSession {
 	t.Helper()
-	return newApprovalSessionWith(t, NewAuthoritativeApprovalStore())
+	return newApprovalSessionWith(t, testApprovalStore())
 }
 
 // injectRaw writes one raw provider JSONL line into the runtime's stdout.
@@ -477,8 +477,8 @@ func TestManagedApproval_WrongAuthorityVersionRejected(t *testing.T) {
 				out(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{"threadId": apprTestThread, "turn": map[string]any{"id": apprTestTurn}}})
 			}
 		}}
-		store := NewAuthoritativeApprovalStore()
-		managed := NewManagedCodexService(CodexAppServerEntryConfig{
+		store := testApprovalStore()
+		managed := testManagedCodexService(CodexAppServerEntryConfig{
 			Bin: "/pinned/toolchain/node_modules/.bin/codex", Version: "codex-cli 0.144.1",
 			AuthorityVersion: version,
 		}, fl)
@@ -489,11 +489,11 @@ func TestManagedApproval_WrongAuthorityVersionRejected(t *testing.T) {
 		rec := newPumpRecorder()
 		managed.pumpObserver = rec.observe
 
-		id, err := managed.CreateAttached("")
+		id, err := managed.CreateAttached("", "test-device", 0)
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		if err := managed.SubmitPrompt(id, 1, "run"); err != nil {
+		if err := managed.SubmitPrompt(id, 1, "run", "test-device", 0); err != nil {
 			t.Fatalf("prompt: %v", err)
 		}
 		waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
@@ -588,7 +588,7 @@ func TestManagedApproval_TurnBindingFailClosed(t *testing.T) {
 	}
 
 	// Closed input (stop/kill first phase) while the pump is still alive.
-	if err := s.managed.SubmitPrompt(s.id, 1, "again"); err != nil {
+	if err := s.managed.SubmitPrompt(s.id, 1, "again", "test-device", 0); err != nil {
 		t.Fatalf("second prompt: %v", err)
 	}
 	waitForStatus(t, s.managed.Registry(), s.id, ManagedStatusWorking)
@@ -726,7 +726,7 @@ func TestManagedApproval_ExitInvalidatesAndDeleteClears(t *testing.T) {
 // once a newer epoch has been observed for the session, and IngestObserved
 // reports the refusal.
 func TestManagedApproval_StaleGenerationIngestDropped(t *testing.T) {
-	store := NewAuthoritativeApprovalStore()
+	store := testApprovalStore()
 	sid := codexAppServerAdapter + ":codex-app-x"
 	ingest := func(launchGen int64, approvalID string) bool {
 		return store.IngestObserved(ApprovalIngest{

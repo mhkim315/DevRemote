@@ -28,8 +28,8 @@ const activationCatalogID = "claude.bash.approval_probe.v1"
 // transition before any runtime exists.
 func newInstalledClaudeService(t *testing.T, launcher ManagedLauncher) (*ManagedClaudeService, *AuthoritativeApprovalStore, ApprovalDelivery, func(string) (RuntimeRef, bool)) {
 	t.Helper()
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	delivery, runtimeOf, err := svc.InstallApprovalExecution(store)
 	if err != nil {
 		t.Fatalf("InstallApprovalExecution: %v", err)
@@ -74,7 +74,7 @@ func TestClaudeInstall_SucceedsBeforeFirstRuntime(t *testing.T) {
 	// All returned components belong to the same service/store: a runtime
 	// created AFTER install ingests actionable records into the installed
 	// store, and the returned resolver resolves it.
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("CreateDetached: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestClaudeInstall_SucceedsBeforeFirstRuntime(t *testing.T) {
 }
 
 func TestClaudeInstall_PreconditionFailuresMutateNothing(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 
 	cases := []struct {
 		name string
@@ -99,36 +99,36 @@ func TestClaudeInstall_PreconditionFailuresMutateNothing(t *testing.T) {
 		want string
 	}{
 		{"nil store", func() *ManagedClaudeService {
-			return NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, nil, "no approval store"},
 		{"wrong authority version", func() *ManagedClaudeService {
 			cfg := testCfg()
 			cfg.AuthorityVersion = "2.1.210"
-			return NewManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, store, "authority version"},
 		{"wrong pinned version", func() *ManagedClaudeService {
 			cfg := testCfg()
 			cfg.Version = "2.1.210"
-			return NewManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, store, "pinned version"},
 		{"empty pinned path", func() *ManagedClaudeService {
 			cfg := testCfg()
 			cfg.PinnedPath = ""
-			return NewManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, store, "pinned path"},
 		{"empty pinned digest", func() *ManagedClaudeService {
 			cfg := testCfg()
 			cfg.PinnedDigest = ""
-			return NewManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, store, "pinned digest"},
 		{"malformed pinned digest", func() *ManagedClaudeService {
 			cfg := testCfg()
 			cfg.PinnedDigest = strings.Repeat("Z", 64)
-			return NewManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			return testManagedClaudeService(cfg, &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 		}, store, "pinned digest"},
 		{"different store configured", func() *ManagedClaudeService {
-			s := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
-			if err := s.SetApprovalStore(NewApprovalStore()); err != nil {
+			s := testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+			if err := s.SetApprovalStore(testApprovalStore()); err != nil {
 				t.Fatal(err)
 			}
 			return s
@@ -156,8 +156,8 @@ func TestClaudeInstall_UncertifiedPlatformFails(t *testing.T) {
 	t.Cleanup(func() { launchOS, launchArch = prevOS, prevArch })
 	launchOS, launchArch = "linux", "amd64"
 
-	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
-	_, _, err := svc.InstallApprovalExecution(NewApprovalStore())
+	svc := testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+	_, _, err := svc.InstallApprovalExecution(testApprovalStore())
 	if err == nil || !strings.Contains(err.Error(), "platform") {
 		t.Fatalf("want platform error, got %v", err)
 	}
@@ -167,24 +167,24 @@ func TestClaudeInstall_UncertifiedPlatformFails(t *testing.T) {
 }
 
 func TestClaudeInstall_ShutdownFails(t *testing.T) {
-	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+	svc := testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
 	svc.mu.Lock()
 	svc.closing = true
 	svc.mu.Unlock()
-	if _, _, err := svc.InstallApprovalExecution(NewApprovalStore()); err == nil || !strings.Contains(err.Error(), "shutting down") {
+	if _, _, err := svc.InstallApprovalExecution(testApprovalStore()); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("want shutting-down error, got %v", err)
 	}
 }
 
 func TestClaudeInstall_AfterRuntimeFails(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { launcher.closeStream() })
-	if _, err := svc.CreateDetached("/tmp"); err != nil {
+	if _, err := svc.CreateDetached("/tmp", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.InstallApprovalExecution(store); err == nil || !strings.Contains(err.Error(), "precede the first managed runtime") {
@@ -207,11 +207,11 @@ func TestClaudeInstall_DoubleInstallFails(t *testing.T) {
 // stay off, and the record can never be claimed.
 func TestClaudeInstall_KB1_FailureLeavesNoActionPath(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	cfg := testCfg()
 	cfg.AuthorityVersion = "2.1.210" // not certified
 	cfg.Version = "2.1.210"
-	svc := NewManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
+	svc := testManagedClaudeService(cfg, launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestClaudeInstall_KB1_FailureLeavesNoActionPath(t *testing.T) {
 		t.Fatal("install must fail on a non-certified version")
 	}
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,8 +259,8 @@ func TestClaudeInstall_KB1_FailureLeavesNoActionPath(t *testing.T) {
 // non-actionable.
 func TestClaudeInstall_ConcurrentCreateHasOneWinner(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	store := NewApprovalStore()
-	svc := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	store := testApprovalStore()
+	svc := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := svc.SetApprovalStore(store); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestClaudeInstall_ConcurrentCreateHasOneWinner(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		id, createErr = svc.CreateDetached("/tmp")
+		id, createErr = svc.CreateDetached("/tmp", "test-device", 0)
 	}()
 	<-atBarrier
 
@@ -316,7 +316,7 @@ func TestClaudeActionable_CatalogMatchExactSummaryAndOptions(t *testing.T) {
 	svc, store, _, _ := newInstalledClaudeService(t, launcher)
 	t.Cleanup(func() { launcher.closeStream() })
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestClaudeActionable_NonCatalogStaysNonActionable(t *testing.T) {
 	svc, store, _, _ := newInstalledClaudeService(t, launcher)
 	t.Cleanup(func() { launcher.closeStream() })
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func forgedIngest(mutate func(*ApprovalIngest, *ApprovalIngestItem)) ApprovalIng
 }
 
 func TestClaudeAdmission_ExactTupleAdmitted(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if !store.IngestObserved(forgedIngest(func(*ApprovalIngest, *ApprovalIngestItem) {})) {
 		t.Fatal("the exact certified tuple must be admitted")
 	}
@@ -447,7 +447,7 @@ func TestClaudeAdmission_ForgedValuesRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := NewApprovalStore()
+			store := testApprovalStore()
 			if store.IngestObserved(forgedIngest(tc.mutate)) {
 				t.Fatal("forged actionable claude item must be rejected at the Store admission boundary")
 			}
@@ -469,7 +469,7 @@ func TestClaudeAdmission_ForgedValuesRejected(t *testing.T) {
 // provider-wide provenActionMapping switch would produce) — is dropped at
 // the deepest admission boundary even from a trusted internal caller.
 func TestClaudeAdmission_KB2_ProviderWideActionabilityRejected(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	in := forgedIngest(func(_ *ApprovalIngest, it *ApprovalIngestItem) {
 		it.CatalogActionID = ""
 		it.DeliveryMaterial = nil
@@ -496,7 +496,7 @@ func TestClaudeAdmission_KB2_ProviderWideActionabilityRejected(t *testing.T) {
 // Codex actionable admission is byte-for-byte the accepted SP1 behavior:
 // the Claude policy must not constrain it.
 func TestClaudeAdmission_CodexActionableUnchanged(t *testing.T) {
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	admitted := store.IngestObserved(ApprovalIngest{
 		SessionID: "codex_app_server:s1", LaunchGen: 1, StreamGen: 0,
 		Provider: codexAppServerAdapter, Version: "0.144.1",
@@ -558,7 +558,7 @@ func driveDeferredExit(t *testing.T, svc *ManagedClaudeService, launcher *fakeCl
 func TestClaudeRuntimeOf_LiveAndDeferredExitWindows(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, store, _, runtimeOf := newInstalledClaudeService(t, launcher)
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestClaudeRuntimeOf_LiveAndDeferredExitWindows(t *testing.T) {
 func TestClaudeRuntimeOf_ExitWithoutJoinInvalidates(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestClaudeRuntimeOf_ExitWithoutJoinInvalidates(t *testing.T) {
 func TestClaudeRuntimeOf_KillAndDeleteInvalidate(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, store, _, runtimeOf := newInstalledClaudeService(t, launcher)
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestClaudeRuntimeOf_TimeoutInvalidates(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, store, _, runtimeOf := newInstalledClaudeService(t, launcher)
 	t.Cleanup(func() { launcher.closeStream() })
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +688,7 @@ func TestClaudeRuntimeOf_TimeoutInvalidates(t *testing.T) {
 func TestClaudeRuntimeOf_DeferredWindowBoundedByStoreExpiry(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, store, _, _ := newInstalledClaudeService(t, launcher)
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +733,7 @@ func TestClaudeCreate_UncertifiedPlatformFailsClosedWhenInstalled(t *testing.T) 
 	t.Cleanup(func() { launchOS = prevOS })
 	launchOS = "linux"
 
-	if _, err := svc.CreateDetached("/tmp"); err == nil || !strings.Contains(err.Error(), "launch certification") {
+	if _, err := svc.CreateDetached("/tmp", "test-device", 0); err == nil || !strings.Contains(err.Error(), "launch certification") {
 		t.Fatalf("installed+uncertified create must fail closed, got %v", err)
 	}
 	if store.Len() != 0 {
@@ -765,7 +765,7 @@ func (r *recordingDelivery) count() int {
 func TestDispatch_RoutesOnlyExactAdapter(t *testing.T) {
 	codex := &recordingDelivery{out: DeliveryAccepted}
 	claude := &recordingDelivery{out: DeliveryAccepted}
-	gate := NewGatedApprovalDelivery(NewRuntimeDeliveryGate()) // capacity-0: unavailable
+	gate := NewGatedApprovalDelivery(testDeliveryGate()) // capacity-0: unavailable
 	// Production shape: Claude occupies the Codex dispatcher's fallback slot.
 	dispatch := NewDispatchingApprovalDelivery(codex, NewClaudeDispatchingApprovalDelivery(claude, gate))
 
@@ -900,7 +900,7 @@ func TestClaudeCreate_LaunchCertificationBoundToRecord(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, _, _, _ := newInstalledClaudeService(t, launcher)
 	t.Cleanup(func() { launcher.closeStream() })
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestClaudeRuntimeOf_ForgedRecordFieldsRejected(t *testing.T) {
 		launcher := &fakeClaudeLauncher{}
 		svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
 		t.Cleanup(func() { launcher.closeStream() })
-		id, err := svc.CreateDetached("/tmp")
+		id, err := svc.CreateDetached("/tmp", "test-device", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1074,8 +1074,8 @@ func TestClaudeInstall_DarwinAMD64Rejected(t *testing.T) {
 	t.Cleanup(func() { launchOS, launchArch = prevOS, prevArch })
 	launchOS, launchArch = "darwin", "amd64"
 
-	svc := NewManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
-	_, _, err := svc.InstallApprovalExecution(NewApprovalStore())
+	svc := testManagedClaudeService(testCfg(), &fakeClaudeLauncher{}, &fakeClaudeAttestor{})
+	_, _, err := svc.InstallApprovalExecution(testApprovalStore())
 	if err == nil || !strings.Contains(err.Error(), "platform") {
 		t.Fatalf("darwin/amd64 must be rejected, got %v", err)
 	}
@@ -1084,7 +1084,7 @@ func TestClaudeInstall_DarwinAMD64Rejected(t *testing.T) {
 func TestClaudeRuntimeOf_DirectDeleteFromDeferredWindow(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
 	svc, _, _, runtimeOf := newInstalledClaudeService(t, launcher)
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1118,7 +1118,7 @@ func TestClaudeResume_CertificationAllFieldsAsserted(t *testing.T) {
 			p.Kill()
 		}
 	})
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1134,7 +1134,7 @@ func TestClaudeResume_CertificationAllFieldsAsserted(t *testing.T) {
 		IdempotencyKey: "k", OptionID: "allow_once", DeliverySchema: claudeDecisionSchemaV1,
 	}
 	claimToken := strings.Repeat("f", 32)
-	handle, ok := svc.Coordinator().ReserveEntry(claimToken, binding)
+	handle, ok := testReserveEntry(svc.Coordinator(), claimToken, binding)
 	if !ok {
 		t.Fatal("ReserveEntry")
 	}
@@ -1192,7 +1192,7 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 			p.Kill()
 		}
 	})
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1208,7 +1208,7 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 		IdempotencyKey: "k", OptionID: "allow_once", DeliverySchema: claudeDecisionSchemaV1,
 	}
 	claimToken := strings.Repeat("e", 32)
-	handle, ok := svc.Coordinator().ReserveEntry(claimToken, binding)
+	handle, ok := testReserveEntry(svc.Coordinator(), claimToken, binding)
 	if !ok {
 		t.Fatal("ReserveEntry")
 	}
@@ -1266,7 +1266,7 @@ func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) 
 				}
 			})
 
-			id, err := svc.CreateDetached("/tmp")
+			id, err := svc.CreateDetached("/tmp", "test-device", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1297,7 +1297,7 @@ func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) 
 				IdempotencyKey: "terminal." + tc.name, OptionID: "allow_once",
 				DeliverySchema: claudeDecisionSchemaV1,
 			}
-			handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("d", 32), binding)
+			handle, ok := testReserveEntry(svc.Coordinator(), strings.Repeat("d", 32), binding)
 			if !ok {
 				t.Fatal("ReserveEntry")
 			}
@@ -1363,7 +1363,7 @@ func TestClaudeResumeReplacementRevokesOldSenderAndRestoreRebindsFresh(t *testin
 		}
 	})
 
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1397,7 +1397,7 @@ func TestClaudeResumeReplacementRevokesOldSenderAndRestoreRebindsFresh(t *testin
 		IdempotencyKey: "sender.replacement", OptionID: "allow_once",
 		DeliverySchema: claudeDecisionSchemaV1,
 	}
-	handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("e", 32), binding)
+	handle, ok := testReserveEntry(svc.Coordinator(), strings.Repeat("e", 32), binding)
 	if !ok {
 		t.Fatal("ReserveEntry")
 	}
@@ -1506,7 +1506,7 @@ func TestClaudeResumeRestoreOriginalExitDoesNotLeaveFreshSender(t *testing.T) {
 			_ = p.Kill()
 		}
 	})
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1529,7 +1529,7 @@ func TestClaudeResumeRestoreOriginalExitDoesNotLeaveFreshSender(t *testing.T) {
 		ActionDigest: strings.Repeat("b", 64), PayloadDigest: payloadDigest(claudeHookResponseBytes("allow")),
 		IdempotencyKey: "restore.exit", OptionID: "allow_once", DeliverySchema: claudeDecisionSchemaV1,
 	}
-	handle, ok := svc.Coordinator().ReserveEntry(strings.Repeat("f", 32), binding)
+	handle, ok := testReserveEntry(svc.Coordinator(), strings.Repeat("f", 32), binding)
 	if !ok {
 		t.Fatal("ReserveEntry")
 	}
@@ -1673,7 +1673,7 @@ func TestClaudeResume_UncertifiedNeverReachesWitness(t *testing.T) {
 			p.Kill()
 		}
 	})
-	id, err := svc.CreateDetached("/tmp")
+	id, err := svc.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

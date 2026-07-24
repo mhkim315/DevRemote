@@ -46,15 +46,11 @@ type OwnedPTYRuntime struct {
 	authorizer          devicetrust.MutationAuthorizer
 }
 
-func NewOwnedPTYRuntime(v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service, authorizers ...devicetrust.MutationAuthorizer) *OwnedPTYRuntime {
-	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
-	if len(authorizers) > 0 {
-		if authorizers[0] == nil {
-			return nil
-		}
-		authorizer = authorizers[0]
+func NewOwnedPTYRuntime(authorizer devicetrust.MutationAuthorizer, v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) (*OwnedPTYRuntime, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("owned PTY mutation authorizer is required")
 	}
-	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer}
+	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer}, nil
 }
 func (o *OwnedPTYRuntime) SetStatusClearer(c StatusClearer) { o.status = c }
 func (o *OwnedPTYRuntime) Transport(id string) (*TerminalTransport, bool) {
@@ -78,13 +74,12 @@ func (o *OwnedPTYRuntime) lockFor(id string) *sync.Mutex {
 type ownedCleanup func(context.Context) CleanupOutcome
 
 // Create has one launch path: V1 Spawn. A missing V1 launcher is a hard failure.
-func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID, name string, authorizations ...MutationAuthorization) (string, error) {
-	authorization := MutationAuthorization{Authorizer: localMutationAuthorizer{}}
-	if len(authorizations) > 0 {
-		authorization = authorizations[0]
-	}
+func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID, name string, deviceID string, deviceEpoch uint64) (string, error) {
 	if o.v1Spawn == nil {
 		return "", fmt.Errorf("no V1 launcher")
+	}
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+		return "", err
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
 	// Retire the exact prior generation before launching a replacement. The
@@ -112,10 +107,6 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	rec := StartRecorderUnconditional(canonicalID, ps)
 	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec)
 	cleanup := func(c context.Context) CleanupOutcome { return result.ProcessCleanup.Execute(c) }
-	if err := authorization.authorize(devicetrust.IntentSessionCreate); err != nil {
-		cleanup(ctx)
-		return "", err
-	}
 	gen := o.register(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec)
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil

@@ -98,7 +98,7 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 	}
 
 	coord := d.svc.coordinator
-	handle, ok := coord.ReserveEntry(req.ClaimToken, b, req.Authorization)
+	handle, ok := coord.ReserveEntry(req.ClaimToken, b, req.DeviceID, req.DeviceEpoch)
 	if !ok {
 		return fail(DeliveryUnavailable)
 	}

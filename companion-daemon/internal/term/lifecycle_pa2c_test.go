@@ -87,8 +87,8 @@ func (c *fakeManagedCatalog) ManagedCapabilities(string) ([]string, []string) {
 
 func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeProviderOwner, *fakeManagedCatalog) {
 	t.Helper()
-	owned := NewOwnedPTYRuntime(nil, nil)
-	svc := NewLifecycleService(owned, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
+	svc := testLifecycleService(owned, nil)
 	codex := &fakeProviderOwner{currentEpoch: 7}
 	claude := &fakeProviderOwner{currentEpoch: 3}
 	cat := newFakeManagedCatalog()
@@ -187,7 +187,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	}
 	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
 
-	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
+	svc := testLifecycleService(testOwnedPTYRuntime(nil, nil), nil)
 	cat := newFakeManagedCatalog()
 	// The FEDERATED catalog still serves the pre-replacement epoch 6 — the
 	// replacement has published nowhere outside the provider's own registry.
@@ -253,7 +253,7 @@ func (*countingHandle) Resize(int, int) error                 { return nil }
 func (*countingHandle) CloseTransport() error                 { return nil }
 
 func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testing.T) {
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	owned.graceful = 50 * time.Millisecond
 	owned.killGrace = 50 * time.Millisecond
 
@@ -311,7 +311,7 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 // store is rejected at the store lock, and a stale finalize cannot touch a
 // replaced record.
 func TestPA2c_OwnedPTY_StaleGenerationRejected(t *testing.T) {
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	id := "controlled_pty:r1"
 	gen1 := owned.RegisterForTest(id, "", "n", nil)
 	// Same canonical id relaunched: a NEW generation replaces the record.
@@ -413,7 +413,7 @@ func TestPA2c_ArchGate_NoRegistryNoSessionCatalog(t *testing.T) {
 // Contract test 7 (no provider rows): the owned-PTY store carries only
 // controlled_pty rows; provider creates register nothing here.
 func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	owned.RegisterForTest("controlled_pty:a", "shell", "a", nil)
 	for _, e := range owned.List() {
 		if e.Adapter != "controlled_pty" {
@@ -429,9 +429,9 @@ func TestPA2c_OwnedStore_NoProviderRows(t *testing.T) {
 func TestPA2c_R2_CreateWithoutHandle_FailsWithoutPublishing(t *testing.T) {
 	cleanup := &migrationCleanup{}
 	launcher := &migrationLauncher{results: []LaunchResult{{Identity: LaunchIdentity{InstanceID: "missing", StartedAt: time.Now()}, ProcessCleanup: cleanup}}}
-	owned := NewOwnedPTYRuntime(launcher, nil)
+	owned := testOwnedPTYRuntime(launcher, nil)
 	local := "nohandle"
-	_, err := owned.Create(context.Background(), SpawnConfig{Name: local, Executable: "true"}, "shell", "n")
+	_, err := owned.Create(context.Background(), SpawnConfig{Name: local, Executable: "true"}, "shell", "n", "test-device", 0)
 	if err == nil {
 		t.Fatal("Create published a running generation without a process handle")
 	}
@@ -456,13 +456,13 @@ func TestPA2c_R2_ReplacementBetweenClaimAndCleanup_NotTerminated(t *testing.T) {
 	firstDone, secondDone := make(chan struct{}), make(chan struct{})
 	firstCleanup, secondCleanup := &migrationCleanup{}, &migrationCleanup{}
 	launcher := &migrationLauncher{results: []LaunchResult{step6aResult("old", firstDone, firstCleanup), step6aResult("new", secondDone, secondCleanup)}}
-	owned := NewOwnedPTYRuntime(launcher, nil)
-	id, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", "")
+	owned := testOwnedPTYRuntime(launcher, nil)
+	id, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", "", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	old, _ := owned.Get(id)
-	if _, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", ""); err != nil {
+	if _, err := owned.Create(context.Background(), SpawnConfig{Name: "claimrace", Executable: "true"}, "", "", "test-device", 0); err != nil {
 		t.Fatal(err)
 	}
 	owned.finalize(id, old.Generation)

@@ -11,8 +11,8 @@ func TestHandlersHaveNoContextRegistryDependency(t *testing.T) {
 
 func TestHandlersKeepOwnedLifecycleIndependent(t *testing.T) {
 	t.Parallel()
-	a := &Handlers{Lifecycle: NewLifecycleService(nil, nil)}
-	b := &Handlers{Lifecycle: NewLifecycleService(nil, nil)}
+	a := &Handlers{Lifecycle: testLifecycleService(nil, nil)}
+	b := &Handlers{Lifecycle: testLifecycleService(nil, nil)}
 	if a.Lifecycle == b.Lifecycle {
 		t.Fatal("handlers unexpectedly share lifecycle authority")
 	}

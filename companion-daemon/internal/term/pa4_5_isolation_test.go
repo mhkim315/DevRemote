@@ -75,13 +75,13 @@ func TestPA4_5_AllManagedReadPathsIsolatedFromRegistry(t *testing.T) {
 	}
 
 	// Lifecycle: Stop/Kill/Delete route through OwnedPTYRuntime or catalog.
-	svc := NewLifecycleService(nil, nil)
+	svc := testLifecycleService(nil, nil)
 	if svc == nil {
 		t.Fatal("LifecycleService is nil")
 	}
 
 	// Approval: store operates on explicit identity.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if store == nil {
 		t.Fatal("ApprovalStore is nil")
 	}
@@ -106,7 +106,7 @@ func TestPA4_5_PA4AcceptanceGatesRecorded(t *testing.T) {
 	}
 
 	// LifecycleService: nil OwnedPTYRuntime handled gracefully.
-	svc := NewLifecycleService(nil, nil)
+	svc := testLifecycleService(nil, nil)
 	if svc == nil {
 		t.Fatal("NewLifecycleService returned nil")
 	}
@@ -144,12 +144,12 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 	cat := NewManagedRuntimeCatalog(codexReg, nil, nil, nil, "0.144.1", "")
 
 	// Lifecycle routes through catalog (provider-owned) or OwnedPTYRuntime.
-	svc := NewLifecycleService(nil, nil)
+	svc := testLifecycleService(nil, nil)
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
 	svc.WireManagedOwners(cat, fakeOwner, nil)
 
 	// Approval store uses explicit identity, never Registry.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if store == nil {
 		t.Fatal("ApprovalStore is nil")
 	}
@@ -261,13 +261,13 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 	}
 
 	// Wire a real OwnedPTYRuntime with the retired transport entry.
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	owned.entries["controlled_pty:r14-retired-hw"] = &CatalogEntry{
 		ID:        "controlled_pty:r14-retired-hw",
 		transport: tt,
 		recorder:  rec,
 	}
-	lcSvc := NewLifecycleService(owned, nil)
+	lcSvc := testLifecycleService(owned, nil)
 
 	h := &Handlers{
 		Lifecycle: lcSvc,
@@ -422,7 +422,7 @@ func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testi
 		t.Fatal("rec1 is nil")
 	}
 	firstHandle := &migrationHandle{reader: migrationReader{done: make(chan struct{})}}
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	gen1 := owned.register("controlled_pty:r17-replace", "", "orig", firstHandle,
 		LaunchIdentity{InstanceID: "original", StartedAt: time.Now()}, nil,
 		newTerminalTransport("controlled_pty:r17-replace", 0, ms1, ms1, rec1), rec1)
@@ -471,13 +471,13 @@ func TestPB2a_ManagedPathsUnaffectedByLinkRemoval(t *testing.T) {
 	}
 
 	// LifecycleService: intact.
-	svc := NewLifecycleService(nil, nil)
+	svc := testLifecycleService(nil, nil)
 	if svc == nil {
 		t.Fatal("NewLifecycleService returned nil")
 	}
 
 	// ApprovalStore: intact.
-	store := NewApprovalStore()
+	store := testApprovalStore()
 	if store == nil {
 		t.Fatal("NewApprovalStore returned nil")
 	}

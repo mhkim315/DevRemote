@@ -18,7 +18,7 @@ var allowOnceActionDigest = func() string {
 // TestRuntimeDeliveryGate_StaleGenerationRefused proves that a write claim with
 // a stale (mismatched) RuntimeRef is refused by the gate.
 func TestRuntimeDeliveryGate_StaleGenerationRefused(t *testing.T) {
-	gate := NewRuntimeDeliveryGate()
+	gate := testDeliveryGate()
 
 	ref1 := RuntimeRef{Adapter: "codex_app_server", Version: "codex-cli-0.144.1", LaunchGen: 1}
 	ref2 := RuntimeRef{Adapter: "codex_app_server", Version: "codex-cli-0.144.1", LaunchGen: 2}
@@ -87,7 +87,7 @@ func TestRuntimeDeliveryGate_StaleGenerationRefused(t *testing.T) {
 // TestRuntimeDeliveryGate_ReplaceMidFlight_StaleRejected exercises the
 // deterministic race: a blocked Accept races with a replacement and loses.
 func TestRuntimeDeliveryGate_ReplaceMidFlight_StaleRejected(t *testing.T) {
-	gate := NewRuntimeDeliveryGate()
+	gate := testDeliveryGate()
 
 	ref1 := RuntimeRef{Adapter: "codex_app_server", Version: "codex-cli-0.144.1", LaunchGen: 1}
 	ref2 := RuntimeRef{Adapter: "codex_app_server", Version: "codex-cli-0.144.1", LaunchGen: 2}

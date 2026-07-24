@@ -101,8 +101,8 @@ func newTestHandlers(t *testing.T) (*Handlers, *fakeControlledAdapter) {
 	fa := newFakeAdapter()
 	// PA2c: profile creation dispatches through the OwnedPTYRuntime owner
 	// (production parity — app.go always wires lifecycle + owned PTY).
-	owned := NewOwnedPTYRuntime(fa, nil)
-	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil)}
+	owned := testOwnedPTYRuntime(fa, nil)
+	h := &Handlers{Lifecycle: testLifecycleService(owned, nil), authorizer: testMutationAuthorizer{}}
 	return h, fa
 }
 
@@ -271,7 +271,7 @@ func TestCreate_InvalidCWDAndName_Rejected(t *testing.T) {
 // BLOCKER 1: privileged local create still runs an arbitrary command.
 func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	owned := NewOwnedPTYRuntime(fa, nil)
+	owned := testOwnedPTYRuntime(fa, nil)
 	id, state, err := createLocalControlled(context.Background(), owned, localCreateSpec{Command: json.RawMessage(`"bash"`)})
 	if err != nil {
 		t.Fatalf("local create err: %v", err)
@@ -288,7 +288,7 @@ func TestPrivilegedLocalCreate_LegacyCommandWorks(t *testing.T) {
 
 func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	owned := NewOwnedPTYRuntime(fa, nil)
+	owned := testOwnedPTYRuntime(fa, nil)
 	id, _, err := createLocalControlled(context.Background(), owned,
 		localCreateSpec{Executable: "bash", Args: []string{"-lc", "echo hi"}})
 	if err != nil {
@@ -304,7 +304,7 @@ func TestPrivilegedLocalCreate_CustomArgvWorks(t *testing.T) {
 // BLOCKER 3: malformed legacy command creates no session.
 func TestPrivilegedLocalCreate_StrictDecodeRejectsMalformed(t *testing.T) {
 	_, fa := newTestHandlers(t)
-	owned := NewOwnedPTYRuntime(fa, nil)
+	owned := testOwnedPTYRuntime(fa, nil)
 	malformed := []json.RawMessage{
 		json.RawMessage(`{"executable":"bash"}`), // object
 		json.RawMessage(`123`),                   // number

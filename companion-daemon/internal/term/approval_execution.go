@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"sort"
 	"unicode/utf8"
-
-	"devremote/companion-daemon/internal/devicetrust"
 )
 
 // A1 remediation 3 — execution-authority contract.
@@ -53,24 +51,6 @@ type RequesterContext struct {
 	BearerSessionID string
 	BootID          string
 	Permissions     []string
-}
-
-// MutationAuthorization is the immutable device authority captured by an
-// authenticated handler and carried to the exact approval mutation boundary.
-// The authorizer is mandatory in production; keeping the identity beside the
-// interface prevents a later lookup from accidentally authorizing a different
-// device or epoch.
-type MutationAuthorization struct {
-	Authorizer  devicetrust.MutationAuthorizer
-	DeviceID    string
-	DeviceEpoch uint64
-}
-
-func (a MutationAuthorization) authorize(intent devicetrust.MutationIntent) error {
-	if a.Authorizer == nil {
-		return localMutationAuthorizer{}.AuthorizeCommit(a.DeviceID, a.DeviceEpoch, intent)
-	}
-	return a.Authorizer.AuthorizeCommit(a.DeviceID, a.DeviceEpoch, intent)
 }
 
 func (r RequesterContext) hasPermission(need string) bool {

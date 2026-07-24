@@ -182,9 +182,9 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 				var id string
 				var merr error
 				if req.Detach {
-					id, merr = managed.CreateDetached(req.CWD)
+					id, merr = managed.CreateDetached(req.CWD, "", 0)
 				} else {
-					id, merr = managed.CreateAttached(req.CWD)
+					id, merr = managed.CreateAttached(req.CWD, "", 0)
 				}
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
@@ -201,7 +201,7 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 					json.NewEncoder(conn).Encode(map[string]string{"error": "managed claude runtime unavailable: daemon started without --enable-managed-claude"})
 					return
 				}
-				id, merr := managedClaude.CreateDetached(req.CWD)
+				id, merr := managedClaude.CreateDetached(req.CWD, "", 0)
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
 				} else {

@@ -8,6 +8,6 @@ import "devremote/companion-daemon/internal/devicetrust"
 // (approval_ingest.go). NewApprovalStore is kept as a thin constructor alias so
 // existing composition/test call sites build against the authoritative store
 // without change; it no longer returns a parser-fed, generation-blind store.
-func NewApprovalStore(authorizers ...devicetrust.MutationAuthorizer) *AuthoritativeApprovalStore {
-	return NewAuthoritativeApprovalStore(authorizers...)
+func NewApprovalStore(authorizer devicetrust.MutationAuthorizer) (*AuthoritativeApprovalStore, error) {
+	return NewAuthoritativeApprovalStore(authorizer)
 }

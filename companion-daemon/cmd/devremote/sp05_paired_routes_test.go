@@ -100,7 +100,7 @@ func managedRemoteFixture(t *testing.T) (*remoteFixture, *cmdFakeLauncher) {
 	fl := &cmdFakeLauncher{}
 	f := newRemoteFixtureWith(t, nil, nil, func(cfg *Config, deps *Dependencies) {
 		cfg.EnableManagedCodex = true
-		deps.Managed = term.NewManagedCodexServiceForTest(fl, func() error { return nil })
+		deps.Managed = term.NewManagedCodexServiceForTest(fl, func() error { return nil }, testMutationAuthorizer{})
 	})
 	return f, fl
 }
@@ -143,7 +143,7 @@ func TestManagedRoutes_PairedDeviceProductionPath(t *testing.T) {
 	memberToken := f.token(t, memberID, memberPriv)
 
 	// A real managed session (deterministic fake provider, production service).
-	sessionID, err := f.app.managed.CreateAttached("")
+	sessionID, err := f.app.managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("managed create: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestManagedRoutes_PairedDeviceProductionPath(t *testing.T) {
 // with zero provider writes.
 func TestManagedRoutes_LegacyAndCrossHostRejected(t *testing.T) {
 	f, fl := managedRemoteFixture(t)
-	sessionID, err := f.app.managed.CreateAttached("")
+	sessionID, err := f.app.managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("managed create: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestManagedPromptAPI_TrailingBodyRejected(t *testing.T) {
 	f, fl := managedRemoteFixture(t)
 	ownerPriv, ownerID := f.pairDevice(t, "owner")
 	ownerToken := f.token(t, ownerID, ownerPriv)
-	sessionID, err := f.app.managed.CreateAttached("")
+	sessionID, err := f.app.managed.CreateAttached("", "test-device", 0)
 	if err != nil {
 		t.Fatalf("managed create: %v", err)
 	}

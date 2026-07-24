@@ -110,7 +110,7 @@ func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCo
 			_ = writeLine(map[string]string{"error": "malformed input line"})
 			continue
 		}
-		if perr := managed.SubmitPrompt(sessionID, epoch, in.Prompt); perr != nil {
+		if perr := managed.SubmitPrompt(sessionID, epoch, in.Prompt, "", 0); perr != nil {
 			_ = writeLine(map[string]string{"error": perr.Error()})
 		}
 	}

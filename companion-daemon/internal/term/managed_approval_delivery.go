@@ -343,7 +343,7 @@ func (rt *codexManagedRuntime) deliverResponse(req ApprovalDeliveryRequest, payl
 			return fail(DeliveryRejected) // provider resolved: zero writes
 		}
 	}
-	if err := req.Authorization.authorize(devicetrust.IntentApprovalDeliver); err != nil {
+	if err := rt.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
 		delete(rt.respWaiters, pend.idInt)
 		rt.respMu.Unlock()
 		return fail(DeliveryStaleRuntime)

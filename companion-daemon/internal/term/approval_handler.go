@@ -128,10 +128,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		ClaimToken: claim.Token,
 		Binding:    claim.Binding,
 		Payload:    claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
-		Authorization: MutationAuthorization{
-			Authorizer: h.Authorizer, DeviceID: principal.DeviceID,
-			DeviceEpoch: uint64(principal.DeviceEpoch),
-		},
+		DeviceID:   principal.DeviceID, DeviceEpoch: uint64(principal.DeviceEpoch),
 	})
 	commit := h.Approvals.RecordDelivery(receipt)
 	if commit.Committed {

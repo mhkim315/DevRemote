@@ -58,7 +58,7 @@ func newInputBWSFixture(t *testing.T, writer *inputBWriter) *inputBWSFixture {
 	recorder, _ := StartRecorder(session, stream)
 	t.Cleanup(func() { _ = pw.Close(); recorder.Stop() })
 
-	owned := NewOwnedPTYRuntime(nil, nil)
+	owned := testOwnedPTYRuntime(nil, nil)
 	owned.RegisterForTest(session, "", "test", recorder)
 	owned.mu.Lock()
 	owned.entries[session].transport = newTerminalTransport(session, generation, writer, stream, recorder)
@@ -78,7 +78,7 @@ func newInputBWSFixture(t *testing.T, writer *inputBWriter) *inputBWSFixture {
 		t.Fatal("device session did not authenticate")
 	}
 	tickets := devicetrust.NewWSTicketStore()
-	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil), Authorizer: localMutationAuthorizer{}, WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity}
+	h := &Handlers{Lifecycle: testLifecycleService(owned, nil), authorizer: testMutationAuthorizer{}, WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity}
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	t.Cleanup(srv.Close)
 	return &inputBWSFixture{server: srv, tickets: tickets, principal: principal, hostID: identity.HostID, session: session, generation: generation}

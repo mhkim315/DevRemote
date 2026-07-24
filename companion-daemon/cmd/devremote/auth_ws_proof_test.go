@@ -67,6 +67,8 @@ func newRemoteFixtureWith(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConf
 		t.Fatalf("device registry: %v", err)
 	}
 	deps := testDeps()
+	deps.HostIdentity = id
+	deps.DeviceRegistry = reg
 	if ticketCfg != nil {
 		deps.WSTicketConfig = ticketCfg
 	}
@@ -81,14 +83,6 @@ func newRemoteFixtureWith(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConf
 	if err != nil {
 		t.Fatalf("NewAppWithDeps: %v", err)
 	}
-	// Production late-wiring performed by App.Run(); replicate it exactly.
-	app.hostIdentity = id
-	app.deviceRegistry = reg
-	app.sessionMgr.GetAuth = reg.GetAuth
-	app.handlers.HostIdentity = id
-	app.authHandler.Identity = id
-	app.authHandler.Registry = reg
-
 	srv := httptest.NewServer(app.server.Handler)
 	t.Cleanup(srv.Close)
 	return &remoteFixture{app: app, srv: srv, id: id, reg: reg}

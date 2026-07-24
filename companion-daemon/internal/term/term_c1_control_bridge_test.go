@@ -99,12 +99,12 @@ type c1Fixture struct {
 func newC1Fixture(t *testing.T) *c1Fixture {
 	t.Helper()
 
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 2 * time.Second
 
 	// Use a real process that reads stdin so input is consumable.
 	cfg := SpawnConfig{Name: "c1-e2e", Executable: "sleep", Args: []string{"10"}}
-	id, err := owned.Create(t.Context(), cfg, "", "test")
+	id, err := owned.Create(t.Context(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create c1 session: %v", err)
 	}
@@ -154,8 +154,8 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 	tickets := devicetrust.NewWSTicketStore()
 
 	h := &Handlers{
-		Lifecycle:    NewLifecycleService(owned, nil),
-		Authorizer:   localMutationAuthorizer{},
+		Lifecycle:    testLifecycleService(owned, nil),
+		authorizer:   testMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -478,10 +478,10 @@ func TestTERM_C1_WrongSessionNoPTYWrite(t *testing.T) {
 // ── E2E: viewer denied + zero PTY write ──
 
 func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 2 * time.Second
 	cfg := SpawnConfig{Name: "c1-viewer", Executable: "sleep", Args: []string{"2"}}
-	id, err := owned.Create(t.Context(), cfg, "", "test")
+	id, err := owned.Create(t.Context(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -515,8 +515,8 @@ func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
 	tickets := devicetrust.NewWSTicketStore()
 
 	h := &Handlers{
-		Lifecycle:    NewLifecycleService(owned, nil),
-		Authorizer:   localMutationAuthorizer{},
+		Lifecycle:    testLifecycleService(owned, nil),
+		authorizer:   testMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -570,10 +570,10 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 	// acknowledged terminal_input (same format bridge.sendInput produces)
 	// instead of raw binary. Prove the viewer principal is denied even
 	// when using the correct protocol framing.
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 2 * time.Second
 	cfg := SpawnConfig{Name: "c1-viewer-paste", Executable: "sleep", Args: []string{"2"}}
-	id, err := owned.Create(t.Context(), cfg, "", "test")
+	id, err := owned.Create(t.Context(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -607,8 +607,8 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 	tickets := devicetrust.NewWSTicketStore()
 
 	h := &Handlers{
-		Lifecycle:    NewLifecycleService(owned, nil),
-		Authorizer:   localMutationAuthorizer{},
+		Lifecycle:    testLifecycleService(owned, nil),
+		authorizer:   testMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -668,10 +668,10 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 // ── E2E: viewer denied — Ctrl+C through acknowledged input ──
 
 func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
-	owned := NewOwnedPTYRuntime(NewNativePTYLauncher(), nil)
+	owned := testOwnedPTYRuntime(NewNativePTYLauncher(), nil)
 	owned.graceful = 2 * time.Second
 	cfg := SpawnConfig{Name: "c1-viewer-ctrlc", Executable: "sleep", Args: []string{"2"}}
-	id, err := owned.Create(t.Context(), cfg, "", "test")
+	id, err := owned.Create(t.Context(), cfg, "", "test", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -705,8 +705,8 @@ func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
 	tickets := devicetrust.NewWSTicketStore()
 
 	h := &Handlers{
-		Lifecycle:    NewLifecycleService(owned, nil),
-		Authorizer:   localMutationAuthorizer{},
+		Lifecycle:    testLifecycleService(owned, nil),
+		authorizer:   testMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,

@@ -58,7 +58,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	// test is id-agnostic.
 	localID := genLocalID("stuck")
 	handle := &stuckPTYHandle{stream: &fakeStream{closed: make(chan struct{})}}
-	svc := NewLifecycleService(NewOwnedPTYRuntime(nil, nil), nil)
+	svc := testLifecycleService(testOwnedPTYRuntime(nil, nil), nil)
 	svc.OwnedPTY().graceful = 50 * time.Millisecond
 	svc.OwnedPTY().killGrace = 50 * time.Millisecond
 	id := "controlled_pty:" + localID

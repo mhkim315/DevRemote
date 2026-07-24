@@ -12,8 +12,8 @@ import (
 // returns the EXACT non-empty LifecycleState from a seeded CatalogEntry.
 func TestLifecycleState_ControlledPTY_SeededEntry(t *testing.T) {
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
-	ownedPTY := NewOwnedPTYRuntime(nil, transcriptSvc)
-	lifecycle := NewLifecycleService(ownedPTY, transcriptSvc)
+	ownedPTY := testOwnedPTYRuntime(nil, transcriptSvc)
+	lifecycle := testLifecycleService(ownedPTY, transcriptSvc)
 
 	// Seed a running catalog entry.
 	seedCatalog(lifecycle, "controlled_pty:test-ls", "controlled_pty", "my-session", LifecycleRunning)

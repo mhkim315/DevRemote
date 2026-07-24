@@ -15,15 +15,15 @@ import (
 func TestManagedClaudeOperationalHooksPostCommitAndRedacted(t *testing.T) {
 	const sentinel = "CLAUDE-SECRET-SENTINEL-5c2e"
 	launcher := &fakeClaudeLauncher{}
-	service := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
-	if err := service.SetApprovalStore(NewApprovalStore()); err != nil {
+	service := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	if err := service.SetApprovalStore(testApprovalStore()); err != nil {
 		t.Fatal(err)
 	}
 	sink := &captureOperationalSink{panicAfter: true}
 	if err := service.SetOperationalEventSink(sink); err != nil {
 		t.Fatal(err)
 	}
-	sessionID, err := service.CreateDetached("/tmp")
+	sessionID, err := service.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestManagedClaudeOperationalResolvedAndFinishedAreRedactedAndPanicIsolated(
 		}
 	})
 
-	sessionID, err := service.CreateDetached("/tmp")
+	sessionID, err := service.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,11 +252,11 @@ func postOperationalClaudeHook(t *testing.T, url, body string) []byte {
 
 func TestManagedClaudeOperationalSinkPanicCannotChangeLifecycle(t *testing.T) {
 	launcher := &fakeClaudeLauncher{}
-	service := NewManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
+	service := testManagedClaudeService(testCfg(), launcher, &fakeClaudeAttestor{})
 	if err := service.SetOperationalEventSink(panicOperationalSink{}); err != nil {
 		t.Fatal(err)
 	}
-	sessionID, err := service.CreateDetached("/tmp")
+	sessionID, err := service.CreateDetached("/tmp", "test-device", 0)
 	if err != nil {
 		t.Fatalf("create changed by sink panic: %v", err)
 	}

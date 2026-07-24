@@ -71,11 +71,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 			cwd = "/"
 		}
 		p := devicetrust.PrincipalFromContext(r.Context())
-		auth := MutationAuthorization{Authorizer: h.Authorizer}
+		var deviceID string
+		var deviceEpoch uint64
 		if p != nil {
-			auth.DeviceID, auth.DeviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+			deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
 		}
-		id, err := h.ManagedClaude.CreateDetached(cwd, auth)
+		id, err := h.ManagedClaude.CreateDetached(cwd, deviceID, deviceEpoch)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -120,11 +121,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 	p := devicetrust.PrincipalFromContext(r.Context())
-	auth := MutationAuthorization{Authorizer: h.Authorizer}
+	var deviceID string
+	var deviceEpoch uint64
 	if p != nil {
-		auth.DeviceID, auth.DeviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+		deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
 	}
-	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), cfg, req.ProfileID, req.Name, auth)
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), cfg, req.ProfileID, req.Name, deviceID, deviceEpoch)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")
@@ -286,7 +288,7 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 	if ownedPTY == nil {
 		return "", LifecycleFailed, ErrLifecycleUnavailable
 	}
-	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name)
+	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name, "", 0)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}

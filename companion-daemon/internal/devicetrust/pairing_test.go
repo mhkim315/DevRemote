@@ -828,14 +828,20 @@ func main() {
 	if err != nil {
 		fail("managed PTY command: %v", err)
 	}
-	owned := term.NewOwnedPTYRuntime(term.NewNativePTYLauncher(), nil)
+	owned, err := term.NewOwnedPTYRuntime(probeMutationAuthorizer{}, term.NewNativePTYLauncher(), nil)
+	if err != nil {
+		fail("construct managed PTY: %v", err)
+	}
 	sessionID, err := owned.Create(context.Background(), term.SpawnConfig{
 		Name: "pb-dg-r4-queryless", Executable: cat, Rows: 24, Cols: 80,
-	}, "shell", "PB-DG-R4 queryless")
+	}, "shell", "PB-DG-R4 queryless", deviceID, 0)
 	if err != nil {
 		fail("create native managed session: %v", err)
 	}
-	lifecycle := term.NewLifecycleService(owned, nil)
+	lifecycle, err := term.NewLifecycleService(probeMutationAuthorizer{}, owned, nil)
+	if err != nil {
+		fail("construct lifecycle: %v", err)
+	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

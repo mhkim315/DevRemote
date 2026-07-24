@@ -23,7 +23,7 @@ type Handlers struct {
 	WSTickets    *devicetrust.WSTicketStore
 	ConnRegistry *devicetrust.AuthenticatedConnRegistry
 	SessionMgr   *devicetrust.DeviceSessionManager
-	Authorizer   devicetrust.MutationAuthorizer // 9.4-D: mandatory mutation authorization
+	authorizer   devicetrust.MutationAuthorizer // 9.4-D: mandatory mutation authorization
 	HostIdentity *devicetrust.HostIdentity      // M2.5-4: for ticket host binding
 	Audit        devicetrust.AuditLog           // M2.5-5: minimal local audit (nil ⇒ no audit)
 	Transcript   *transcript.Service            // T3: bounded session-isolated Transcript store + projectors
@@ -59,7 +59,7 @@ func NewHandlers(authorizer devicetrust.MutationAuthorizer) (*Handlers, error) {
 	if authorizer == nil {
 		return nil, fmt.Errorf("mutation authorizer is required")
 	}
-	return &Handlers{Authorizer: authorizer}, nil
+	return &Handlers{authorizer: authorizer}, nil
 }
 
 // AgentDetector is the agent adapter layer's detection interface.
