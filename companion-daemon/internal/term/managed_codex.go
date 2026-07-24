@@ -11,6 +11,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+
+	"devremote/companion-daemon/internal/devicetrust"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -660,6 +662,9 @@ type ManagedCodexService struct {
 	// named points inside CreateDetached so deterministic tests can pause a
 	// create and race it against Shutdown.
 	createBarrier func(stage string)
+
+	// 9.4-D: device authorization callback for epoch-gated mutations.
+	DeviceAuth func(deviceID string) devicetrust.AuthorizationState
 }
 
 func (s *ManagedCodexService) barrier(stage string) {
@@ -837,16 +842,27 @@ func (s *ManagedCodexService) eventStoreFor(sessionID string) (*managedEventStor
 const managedStopGraceful = 2 * time.Second
 
 // lifecycleRuntime resolves and epoch-binds a runtime for a lifecycle op.
-func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64) (*codexManagedRuntime, error) {
+func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) (*codexManagedRuntime, error) {
 	s.mu.Lock()
 	rt := s.runtimes[sessionID]
-	s.mu.Unlock()
 	if rt == nil {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("managed session not found")
 	}
 	if rt.epoch != epoch {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("stale session epoch")
 	}
+	// 9.4-D: atomic device epoch check under s.mu before returning runtime.
+	// Empty deviceID → skip (insecure-local / test path with no principal).
+	if deviceID != "" && s.DeviceAuth != nil {
+		auth := s.DeviceAuth(deviceID)
+		if !auth.Active || auth.Epoch != deviceEpoch {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("device epoch mismatch")
+		}
+	}
+	s.mu.Unlock()
 	return rt, nil
 }
 
@@ -871,8 +887,8 @@ func (rt *codexManagedRuntime) awaitExit(d time.Duration) bool {
 // bounded wait, then KILL; reaped; the record is non-current (exited) when
 // Stop returns. Idempotent: stopping an already-terminal session succeeds
 // without touching the process again.
-func (s *ManagedCodexService) Stop(sessionID string, epoch int64) error {
-	rt, err := s.lifecycleRuntime(sessionID, epoch)
+func (s *ManagedCodexService) Stop(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
+	rt, err := s.lifecycleRuntime(sessionID, epoch, deviceID, deviceEpoch)
 	if err != nil {
 		return err
 	}
@@ -902,8 +918,8 @@ func (s *ManagedCodexService) Stop(sessionID string, epoch int64) error {
 
 // Kill force-terminates a managed session's process group and reaps it. The
 // record is non-current when Kill returns. Idempotent on terminal sessions.
-func (s *ManagedCodexService) Kill(sessionID string, epoch int64) error {
-	rt, err := s.lifecycleRuntime(sessionID, epoch)
+func (s *ManagedCodexService) Kill(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
+	rt, err := s.lifecycleRuntime(sessionID, epoch, deviceID, deviceEpoch)
 	if err != nil {
 		return err
 	}
@@ -930,7 +946,7 @@ func (s *ManagedCodexService) Kill(sessionID string, epoch int64) error {
 // later native events and prompts are inert. Deleting a non-terminal session
 // fails closed; deleting a deleted session reports not-found without side
 // effects.
-func (s *ManagedCodexService) Delete(sessionID string, epoch int64) error {
+func (s *ManagedCodexService) Delete(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
 	rec, ok := s.reg.Get(sessionID)
 	if !ok {
 		return fmt.Errorf("managed session not found")

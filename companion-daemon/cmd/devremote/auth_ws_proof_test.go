@@ -132,7 +132,7 @@ func (f *remoteFixture) createControlledSession(t *testing.T, ownerToken, name s
 	if created.ID == "" {
 		t.Fatal("create response missing session id")
 	}
-	t.Cleanup(func() { _, _ = f.app.lifecycle.Kill(context.Background(), created.ID) })
+	t.Cleanup(func() { _, _ = f.app.lifecycle.Kill(context.Background(), created.ID, "", 0) })
 	return created.ID
 }
 

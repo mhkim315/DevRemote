@@ -593,7 +593,7 @@ func TestC3DB_StaleRuntimeRejected(t *testing.T) {
 	sid, aid, _ := fx.seedClaudeRecord(t)
 	tok := fx.bearer(t)
 
-	if err := fx.svc.Stop(sid, 1); err != nil {
+	if err := fx.svc.Stop(sid, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	code, _ := fx.doJSON(t, "POST",

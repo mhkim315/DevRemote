@@ -579,7 +579,7 @@ func TestClaudeRuntimeOf_LiveAndDeferredExitWindows(t *testing.T) {
 
 	// Stop revokes the window: identity cleared, record superseded, no
 	// resolvable authority remains.
-	if err := svc.Stop(id, 1); err != nil {
+	if err := svc.Stop(id, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := runtimeOf(id); ok {
@@ -615,13 +615,13 @@ func TestClaudeRuntimeOf_KillAndDeleteInvalidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	aid := driveDeferredExit(t, svc, launcher, id)
-	if err := svc.Kill(id, 1); err != nil {
+	if err := svc.Kill(id, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := runtimeOf(id); ok {
 		t.Fatal("Kill must invalidate RuntimeOf")
 	}
-	if err := svc.Delete(id, 1); err != nil {
+	if err := svc.Delete(id, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := runtimeOf(id); ok {
@@ -1094,7 +1094,7 @@ func TestClaudeRuntimeOf_DirectDeleteFromDeferredWindow(t *testing.T) {
 	}
 
 	// Delete without prior Stop/Kill (session is Exited after deferred exit).
-	if err := svc.Delete(id, 1); err != nil {
+	if err := svc.Delete(id, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := runtimeOf(id); ok {

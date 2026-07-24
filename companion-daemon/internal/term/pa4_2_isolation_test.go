@@ -17,19 +17,19 @@ func TestPA4_2_LifecycleServiceHasNoRegistryDependency(t *testing.T) {
 	svc := NewLifecycleService(owned, nil)
 
 	// Stop routes to OwnedPTYRuntime for nonexistent sessions — returns error, not panic.
-	_, err := svc.Stop(context.Background(), "controlled_pty:nonexistent")
+	_, err := svc.Stop(context.Background(), "controlled_pty:nonexistent", "", 0)
 	if err == nil {
 		t.Error("Stop should return error for nonexistent session")
 	}
 
 	// Kill routes to OwnedPTYRuntime.
-	_, err = svc.Kill(context.Background(), "controlled_pty:nonexistent")
+	_, err = svc.Kill(context.Background(), "controlled_pty:nonexistent", "", 0)
 	if err == nil {
 		t.Error("Kill should return error for nonexistent session")
 	}
 
 	// Delete routes to OwnedPTYRuntime.
-	_, err = svc.Delete(context.Background(), "controlled_pty:nonexistent")
+	_, err = svc.Delete(context.Background(), "controlled_pty:nonexistent", "", 0)
 	if err == nil {
 		t.Error("Delete should return error for nonexistent session")
 	}
@@ -53,7 +53,7 @@ func TestPA4_2_LifecycleStopRoutesThroughProviderOwner(t *testing.T) {
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
 	svc.WireManagedOwners(cat, fakeOwner, nil)
 
-	res, err := svc.Stop(context.Background(), "codex_app_server:lc-stop")
+	res, err := svc.Stop(context.Background(), "codex_app_server:lc-stop", "", 0)
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestPA4_2_LifecycleDeleteClearsTranscript(t *testing.T) {
 	fakeOwner := &fakeProviderOwner{currentEpoch: 1}
 	svc.WireManagedOwners(cat, fakeOwner, nil)
 
-	res, err := svc.Delete(context.Background(), sid)
+	res, err := svc.Delete(context.Background(), sid, "", 0)
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestPA4_2_ManagedLifecycleNeverUsesRegistryAdapter(t *testing.T) {
 	svc.WireManagedOwners(cat, fakeOwner, nil)
 
 	// Stop should succeed through catalog + provider owner, no Registry needed.
-	res, err := svc.Stop(context.Background(), "codex_app_server:no-reg")
+	res, err := svc.Stop(context.Background(), "codex_app_server:no-reg", "", 0)
 	if err != nil {
 		t.Fatalf("Stop with nil OwnedPTYRuntime: %v", err)
 	}
@@ -153,12 +153,12 @@ func TestPA4_2_UnknownSessionFailsClosed(t *testing.T) {
 	svc.WireManagedOwners(cat, nil, nil)
 
 	// Unknown session must return error (fail closed), not succeed silently.
-	_, err := svc.Stop(context.Background(), "legacy:unknown")
+	_, err := svc.Stop(context.Background(), "legacy:unknown", "", 0)
 	if err == nil {
 		t.Error("Stop succeeded on unknown legacy session — must fail closed")
 	}
 
-	_, err = svc.Kill(context.Background(), "legacy:unknown")
+	_, err = svc.Kill(context.Background(), "legacy:unknown", "", 0)
 	if err == nil {
 		t.Error("Kill succeeded on unknown legacy session — must fail closed")
 	}

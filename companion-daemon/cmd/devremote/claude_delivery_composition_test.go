@@ -424,7 +424,7 @@ func TestClaudeDelivery_DeferredExitThenStopClearsIdentity(t *testing.T) {
 	if svc.Coordinator().IdentityCount() != 1 {
 		t.Fatalf("identity must survive deferred exit, got %d", svc.Coordinator().IdentityCount())
 	}
-	if err := svc.Stop(sid, 1); err != nil {
+	if err := svc.Stop(sid, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if svc.Coordinator().IdentityCount() != 0 {
@@ -459,7 +459,7 @@ func TestClaudeDelivery_DeferredExitThenKillClearsIdentity(t *testing.T) {
 	if svc.Coordinator().IdentityCount() != 1 {
 		t.Fatalf("identity must survive deferred exit, got %d", svc.Coordinator().IdentityCount())
 	}
-	if err := svc.Kill(sid, 1); err != nil {
+	if err := svc.Kill(sid, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if svc.Coordinator().IdentityCount() != 0 {
@@ -496,7 +496,7 @@ func TestClaudeDelivery_DeferredExitThenDeleteClearsIdentity(t *testing.T) {
 	}
 	// Delete requires Exited. The deferred exit already terminated the runtime.
 	// No Stop pre-call — proves Delete cleanup independently.
-	if err := svc.Delete(sid, 1); err != nil {
+	if err := svc.Delete(sid, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if svc.Coordinator().IdentityCount() != 0 {
@@ -943,7 +943,7 @@ func TestClaudeDelivery_CatalogStaleRuntimeStop(t *testing.T) {
 	d.SetDrainTimeout(0)
 	d.SetPollTimeout(2 * time.Second)
 
-	if err := svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen); err != nil {
+	if err := svc.Stop(claim.Binding.SessionID, claim.Binding.Runtime.LaunchGen, "", 0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 

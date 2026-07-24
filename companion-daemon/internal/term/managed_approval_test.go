@@ -99,7 +99,7 @@ func newApprovalSessionWith(t *testing.T, store *AuthoritativeApprovalStore) *ap
 	if rt == nil {
 		t.Fatalf("runtime not published")
 	}
-	t.Cleanup(func() { _ = managed.Kill(id, 1) })
+	t.Cleanup(func() { _ = managed.Kill(id, 1, "", 0) })
 	return &approvalSession{managed: managed, store: store, fl: fl, rec: rec, id: id, rt: rt, providerWrites: &writes}
 }
 
@@ -503,7 +503,7 @@ func TestManagedApproval_WrongAuthorityVersionRejected(t *testing.T) {
 		if got := store.ListSafe(id); len(got) != 0 {
 			t.Fatalf("version %q must reject: %+v", version, got)
 		}
-		_ = managed.Kill(id, 1)
+		_ = managed.Kill(id, 1, "", 0)
 	}
 }
 
@@ -702,7 +702,7 @@ func TestManagedApproval_ExitInvalidatesAndDeleteClears(t *testing.T) {
 	s.sync(t)
 	waitForSafeApprovals(t, s.store, s.id, 1)
 
-	if err := s.managed.Kill(s.id, 1); err != nil {
+	if err := s.managed.Kill(s.id, 1, "", 0); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
 	got := waitForSafeApprovals(t, s.store, s.id, 1)
@@ -713,7 +713,7 @@ func TestManagedApproval_ExitInvalidatesAndDeleteClears(t *testing.T) {
 		t.Fatalf("exit must drop pending state: %+v", pending)
 	}
 
-	if err := s.managed.Delete(s.id, 1); err != nil {
+	if err := s.managed.Delete(s.id, 1, "", 0); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if got := s.store.ListSafe(s.id); len(got) != 0 {

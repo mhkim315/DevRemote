@@ -119,7 +119,14 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, err.Error(), http.StatusConflict)
 					return
 				}
-				res, lerr := h.Lifecycle.Delete(r.Context(), id)
+				p := devicetrust.PrincipalFromContext(r.Context())
+				var deviceID string
+				var deviceEpoch uint64
+				if p != nil {
+					deviceID = p.DeviceID
+					deviceEpoch = uint64(p.DeviceEpoch)
+				}
+				res, lerr := h.Lifecycle.Delete(r.Context(), id, deviceID, deviceEpoch)
 				if lerr == nil {
 					if err := h.commitEpoch(tok); err != nil {
 						http.Error(w, err.Error(), http.StatusConflict)

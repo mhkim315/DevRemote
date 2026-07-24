@@ -164,7 +164,7 @@ func (s *deliverySession) launchTurn(t *testing.T) {
 	if s.rt == nil {
 		t.Fatalf("runtime not published")
 	}
-	t.Cleanup(func() { _ = s.managed.Kill(id, 1) })
+	t.Cleanup(func() { _ = s.managed.Kill(id, 1, "", 0) })
 }
 
 func newDeliverySession(t *testing.T, autoResolve bool) *deliverySession {
@@ -707,7 +707,7 @@ func TestCodexDelivery_ExitFailsWaiterDeterministically(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if err := s.managed.Kill(s.id, 1); err != nil {
+	if err := s.managed.Kill(s.id, 1, "", 0); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
 	receipt := <-done
@@ -748,10 +748,10 @@ func TestCodexDelivery_StaleBindingsZeroWrites(t *testing.T) {
 		t.Fatalf("no stale binding may reach the wire")
 	}
 
-	if err := s.managed.Kill(s.id, 1); err != nil {
+	if err := s.managed.Kill(s.id, 1, "", 0); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
-	if err := s.managed.Delete(s.id, 1); err != nil {
+	if err := s.managed.Delete(s.id, 1, "", 0); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if r := d.Deliver(ApprovalDeliveryRequest{ClaimToken: c.Token, Binding: c.Binding, Payload: c.Payload}); r.Outcome != DeliveryUnavailable {
@@ -947,7 +947,7 @@ func TestCodexDelivery_ExitInWriteClaimWindow(t *testing.T) {
 		if stage != "post-write-claim" {
 			return
 		}
-		if err := s.managed.Kill(s.id, 1); err != nil {
+		if err := s.managed.Kill(s.id, 1, "", 0); err != nil {
 			t.Errorf("kill: %v", err)
 		}
 	}

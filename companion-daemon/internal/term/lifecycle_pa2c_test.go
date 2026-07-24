@@ -48,13 +48,13 @@ func (f *fakeProviderOwner) decide(action, id string, epoch int64) LifecycleActi
 	return OutcomeAccepted
 }
 
-func (f *fakeProviderOwner) Stop(id string, epoch int64) LifecycleActionOutcome {
+func (f *fakeProviderOwner) Stop(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
 	return f.decide("stop", id, epoch)
 }
-func (f *fakeProviderOwner) Kill(id string, epoch int64) LifecycleActionOutcome {
+func (f *fakeProviderOwner) Kill(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
 	return f.decide("kill", id, epoch)
 }
-func (f *fakeProviderOwner) Delete(id string, epoch int64) LifecycleActionOutcome {
+func (f *fakeProviderOwner) Delete(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
 	return f.decide("delete", id, epoch)
 }
 
@@ -103,15 +103,15 @@ func TestPA2c_ProviderRoutes_DispatchWithDerivedEpoch(t *testing.T) {
 	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7})
 	cat.put(ManagedSessionRecord{SessionID: "claude_headless:h1", Provider: "claude", Version: "2.1.202", Epoch: 3})
 
-	if res, err := svc.Stop(context.Background(), "codex_app_server:c1"); err != nil || res.State != LifecycleExited {
+	if res, err := svc.Stop(context.Background(), "codex_app_server:c1", "", 0); err != nil || res.State != LifecycleExited {
 		t.Fatalf("codex stop = %+v err=%v", res, err)
 	}
-	if res, err := svc.Kill(context.Background(), "claude_headless:h1"); err != nil || res.State != LifecycleKilled {
+	if res, err := svc.Kill(context.Background(), "claude_headless:h1", "", 0); err != nil || res.State != LifecycleKilled {
 		t.Fatalf("claude kill = %+v err=%v", res, err)
 	}
 	// Delete requires terminal record.
 	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7, Exited: true})
-	if res, err := svc.Delete(context.Background(), "codex_app_server:c1"); err != nil || res.Action != "delete" {
+	if res, err := svc.Delete(context.Background(), "codex_app_server:c1", "", 0); err != nil || res.Action != "delete" {
 		t.Fatalf("codex delete = %+v err=%v", res, err)
 	}
 
@@ -140,7 +140,7 @@ func TestPA2c_StaleGeneration_RejectedWithoutSignalingReplacement(t *testing.T) 
 	// has NOT been published to any read path).
 	codex.currentEpoch = 7
 
-	_, err := svc.Stop(context.Background(), "codex_app_server:c1")
+	_, err := svc.Stop(context.Background(), "codex_app_server:c1", "", 0)
 	if err != ErrLifecycleStaleGeneration {
 		t.Fatalf("stale stop err = %v, want exact ErrLifecycleStaleGeneration (pre-publication)", err)
 	}
@@ -151,7 +151,7 @@ func TestPA2c_StaleGeneration_RejectedWithoutSignalingReplacement(t *testing.T) 
 	// Once the replacement publishes, the same route dispatches cleanly to
 	// the current generation.
 	cat.put(ManagedSessionRecord{SessionID: "codex_app_server:c1", Provider: "codex", Version: "0.144.1", Epoch: 7})
-	res2, err2 := svc.Stop(context.Background(), "codex_app_server:c1")
+	res2, err2 := svc.Stop(context.Background(), "codex_app_server:c1", "", 0)
 	if err2 != nil || res2.State != LifecycleExited {
 		t.Fatalf("current-epoch stop after publication = %+v err=%v", res2, err2)
 	}
@@ -178,7 +178,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	// The frozen service surface rejects with an ARBITRARY error the wrapper
 	// must not parse.
 	var currentSignals int
-	stop := func(id string, epoch int64) error {
+	stop := func(id string, epoch int64, deviceID string, deviceEpoch uint64) error {
 		if epoch != 7 {
 			return fmt.Errorf("some opaque provider refusal text %d", epoch)
 		}
@@ -194,7 +194,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	cat.put(ManagedSessionRecord{SessionID: sid, Provider: "codex", Version: "0.144.1", Epoch: 6})
 	svc.WireManagedOwners(cat, owner, nil)
 
-	_, err := svc.Stop(context.Background(), sid)
+	_, err := svc.Stop(context.Background(), sid, "", 0)
 	if err != ErrLifecycleStaleGeneration {
 		t.Fatalf("err = %v, want exact ErrLifecycleStaleGeneration from provider-owned registry classification", err)
 	}
@@ -204,7 +204,7 @@ func TestPA2c_R1_ProviderWrapper_StaleBeforePublication(t *testing.T) {
 	// Typed pre-call classification also covers the remaining closed
 	// outcomes without invoking the provider (R2: pre-call authoritative
 	// state only).
-	if oc := owner.Stop("codex_app_server:missing", 7); oc != OutcomeNotFound {
+	if oc := owner.Stop("codex_app_server:missing", 7, "", 0); oc != OutcomeNotFound {
 		t.Fatalf("Stop(unknown) = %s, want not_found", oc)
 	}
 }
@@ -353,7 +353,7 @@ func TestPA2c_OwnedPTY_ExactlyOnceTerminalConvergence(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	// A later Stop converges idempotently on the SAME terminal row.
-	res, err := svc.Stop(context.Background(), id)
+	res, err := svc.Stop(context.Background(), id, "", 0)
 	if err != nil || !res.State.Terminal() {
 		t.Fatalf("stop after natural exit = %+v err=%v", res, err)
 	}
@@ -488,7 +488,7 @@ func TestPA2c_R2_CodexTimeout_MarkExitedThenError_IsTerminationFailed(t *testing
 		t.Fatalf("seed provider registry: %v", err)
 	}
 	calls := 0
-	stop := func(id string, epoch int64) error {
+	stop := func(id string, epoch int64, deviceID string, deviceEpoch uint64) error {
 		calls++
 		// Frozen ManagedCodexService.Stop timeout path: mark non-current so a
 		// stopped session can never look live, then report the failure.
@@ -497,7 +497,7 @@ func TestPA2c_R2_CodexTimeout_MarkExitedThenError_IsTerminationFailed(t *testing
 	}
 	owner := NewManagedProviderOwner(provReg, stop, stop, stop)
 
-	if oc := owner.Stop(sid, 7); oc != OutcomeTerminationFailed {
+	if oc := owner.Stop(sid, 7, "", 0); oc != OutcomeTerminationFailed {
 		t.Fatalf("MarkExited-then-error Stop outcome = %s, want termination_failed", oc)
 	}
 	if calls != 1 {
@@ -511,7 +511,7 @@ func TestPA2c_R2_CodexTimeout_MarkExitedThenError_IsTerminationFailed(t *testing
 
 	// PRE-call authoritative state: the record is now genuinely exited, so a
 	// repeated Stop is already_terminal WITHOUT invoking the provider.
-	if oc := owner.Stop(sid, 7); oc != OutcomeAlreadyTerminal {
+	if oc := owner.Stop(sid, 7, "", 0); oc != OutcomeAlreadyTerminal {
 		t.Fatalf("pre-call exited Stop outcome = %s, want already_terminal", oc)
 	}
 	if calls != 1 {

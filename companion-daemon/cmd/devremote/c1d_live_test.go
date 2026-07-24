@@ -196,7 +196,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 
 	// Stop + Shutdown.
-	if err := svc.Stop(id, rec.Epoch); err != nil {
+	if err := svc.Stop(id, rec.Epoch, "", 0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

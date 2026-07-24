@@ -8,6 +8,8 @@ package term
 
 import (
 	"encoding/json"
+
+	"devremote/companion-daemon/internal/devicetrust"
 	"fmt"
 	"io"
 	"net/http"
@@ -202,14 +204,13 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// SubmitPrompt reserves the active turn and writes to the provider. The
-	// request principal must still be authorized at that mutation boundary.
-	tok, err := h.reserveEpoch(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
+	// request principal is captured now and re-validated inside the provider lock.
+	p := devicetrust.PrincipalFromContext(r.Context())
 	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
-		return h.commitEpoch(tok)
+		if h.DeviceRegistry == nil {
+			return nil
+		}
+		return h.DeviceRegistry.CommitEpoch(&devicetrust.EpochToken{DeviceID: p.DeviceID, Epoch: uint64(p.DeviceEpoch)})
 	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
@@ -228,7 +229,7 @@ type managedLifecycleRequest struct {
 	Epoch int64 `json:"epoch"`
 }
 
-func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64) error) {
+func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
 	if h.Managed == nil {
 		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
 		return
@@ -247,21 +248,13 @@ func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	// Stop/kill/delete all mutate provider-owned session state. Recheck after
 	// decoding and immediately before dispatching the selected operation.
-	tok, err := h.reserveEpoch(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	if err := op(id, req.Epoch); err != nil {
+	p := devicetrust.PrincipalFromContext(r.Context())
+	if err := op(id, req.Epoch, p.DeviceID, uint64(p.DeviceEpoch)); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
 		}
 		http.Error(w, err.Error(), status)
-		return
-	}
-	if err := h.commitEpoch(tok); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	// Bounded post-op state: the record for stop/kill; a tombstone for delete.
@@ -303,7 +296,7 @@ func (h *Handlers) HandleManagedSessionDelete(w http.ResponseWriter, r *http.Req
 // ── C1D Claude managed-session lifecycle handlers ──
 
 // handleManagedClaudeLifecycle delegates lifecycle ops to the Claude service.
-func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64) error) {
+func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
 	if h.ManagedClaude == nil {
 		http.Error(w, "managed claude sessions not enabled", http.StatusNotFound)
 		return
@@ -320,21 +313,13 @@ func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.R
 		return
 	}
 	id := r.PathValue("id")
-	tok, err := h.reserveEpoch(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	if err := op(id, req.Epoch); err != nil {
+	p := devicetrust.PrincipalFromContext(r.Context())
+	if err := op(id, req.Epoch, p.DeviceID, uint64(p.DeviceEpoch)); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
 		}
 		http.Error(w, err.Error(), status)
-		return
-	}
-	if err := h.commitEpoch(tok); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -62,7 +62,7 @@ func TestTimelineRealManagedCodexPathRedactsEveryOutput(t *testing.T) {
 		contract.EventToolCallFinished,
 		contract.EventStreamObserved,
 	)
-	if err := service.Kill(sessionID, 1); err != nil {
+	if err := service.Kill(sessionID, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	waitForTimelineKinds(t, app.timelineWriter, contract.EventProviderInvocationFinished)

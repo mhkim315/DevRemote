@@ -144,7 +144,7 @@ func TestAPISessions_DeleteRemovesRetainedRow(t *testing.T) {
 	if len(listed) != 1 || listed[0].ID != "controlled_pty:done" {
 		t.Fatalf("retained terminal row must be listable before Delete")
 	}
-	if _, err := svc.Delete(context.Background(), "controlled_pty:done"); err != nil {
+	if _, err := svc.Delete(context.Background(), "controlled_pty:done", "", 0); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if rows := mergeLifecycleState(nil, svc); len(rows) != 0 {

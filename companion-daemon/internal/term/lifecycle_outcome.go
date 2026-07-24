@@ -67,18 +67,18 @@ func mapOutcome(oc LifecycleActionOutcome) error {
 // BEFORE a replacement publishes anywhere else.
 type managedProviderOwner struct {
 	reg  *ManagedSessionRegistry
-	stop func(sessionID string, epoch int64) error
-	kill func(sessionID string, epoch int64) error
-	del  func(sessionID string, epoch int64) error
+	stop func(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error
+	kill func(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error
+	del  func(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error
 }
 
 // NewManagedProviderOwner wraps a frozen provider service's generation-bound
 // lifecycle surface in the typed outcome vocabulary.
 func NewManagedProviderOwner(
 	reg *ManagedSessionRegistry,
-	stop func(string, int64) error,
-	kill func(string, int64) error,
-	del func(string, int64) error,
+	stop func(string, int64, string, uint64) error,
+	kill func(string, int64, string, uint64) error,
+	del func(string, int64, string, uint64) error,
 ) ProviderLifecycleOwner {
 	return &managedProviderOwner{reg: reg, stop: stop, kill: kill, del: del}
 }
@@ -99,7 +99,7 @@ func NewManagedProviderOwner(
 // termination_failed: the record shows Exited at the SAME generation after
 // the call, but termination was not confirmed, so it must not be reported
 // as already_terminal. err is only checked for nil-ness — never parsed.
-func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int64) error, isDelete bool) LifecycleActionOutcome {
+func (p *managedProviderOwner) act(id string, epoch int64, deviceID string, deviceEpoch uint64, call func(string, int64, string, uint64) error, isDelete bool) LifecycleActionOutcome {
 	if call == nil || p.reg == nil {
 		return OutcomeUnavailable
 	}
@@ -116,7 +116,7 @@ func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int
 	case isDelete && !pre.Exited:
 		return OutcomeNotTerminal
 	}
-	err := call(id, epoch)
+	err := call(id, epoch, deviceID, deviceEpoch)
 	if err == nil {
 		return OutcomeAccepted
 	}
@@ -133,14 +133,14 @@ func (p *managedProviderOwner) act(id string, epoch int64, call func(string, int
 	}
 }
 
-func (p *managedProviderOwner) Stop(id string, epoch int64) LifecycleActionOutcome {
-	return p.act(id, epoch, p.stop, false)
+func (p *managedProviderOwner) Stop(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
+	return p.act(id, epoch, deviceID, deviceEpoch, p.stop, false)
 }
 
-func (p *managedProviderOwner) Kill(id string, epoch int64) LifecycleActionOutcome {
-	return p.act(id, epoch, p.kill, false)
+func (p *managedProviderOwner) Kill(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
+	return p.act(id, epoch, deviceID, deviceEpoch, p.kill, false)
 }
 
-func (p *managedProviderOwner) Delete(id string, epoch int64) LifecycleActionOutcome {
-	return p.act(id, epoch, p.del, true)
+func (p *managedProviderOwner) Delete(id string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome {
+	return p.act(id, epoch, deviceID, deviceEpoch, p.del, true)
 }

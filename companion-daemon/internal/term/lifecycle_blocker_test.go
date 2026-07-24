@@ -67,7 +67,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	o.register(id, "", "n", handle, LaunchIdentity{InstanceID: localID, StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{handle}, handle, rec), rec)
 	t.Cleanup(func() { closeOwnedForTest(o, id) })
 
-	res, err := svc.Stop(context.Background(), id)
+	res, err := svc.Stop(context.Background(), id, "", 0)
 	if err != ErrLifecycleTerminateFailed {
 		t.Fatalf("err = %v, want ErrLifecycleTerminateFailed", err)
 	}
@@ -112,7 +112,7 @@ func TestLifecycle_ConcurrentDelete_OneSucceeds(t *testing.T) {
 	id := "controlled_pty:cd"
 	svc := lcService(t, newLCAdapter("controlled_pty", true))
 	svc.OwnedPTY().RegisterForTest(id, "", "cd", nil)
-	if _, err := svc.Stop(context.Background(), id); err != nil {
+	if _, err := svc.Stop(context.Background(), id, "", 0); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestLifecycle_ConcurrentDelete_OneSucceeds(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			switch _, err := svc.Delete(context.Background(), id); err {
+			switch _, err := svc.Delete(context.Background(), id, "", 0); err {
 			case nil:
 				atomic.AddInt32(&succ, 1)
 			case ErrLifecycleNotFound:
@@ -150,7 +150,7 @@ func TestLifecycle_ConcurrentStop_StableState(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res, err := svc.Stop(context.Background(), id)
+			res, err := svc.Stop(context.Background(), id, "", 0)
 			if err == nil && res.State == "" {
 				atomic.AddInt32(&bad, 1)
 			}
@@ -167,7 +167,7 @@ func TestLifecycle_ConcurrentStop_StableState(t *testing.T) {
 func TestLifecycle_Stop_RemovesAdapterSession(t *testing.T) {
 	svc := realService(t)
 	id := realManaged(t, svc, "sleep 30")
-	if _, err := svc.Stop(context.Background(), id); err != nil {
+	if _, err := svc.Stop(context.Background(), id, "", 0); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if e, ok := svc.OwnedPTY().Get(id); !ok || !e.State.Terminal() {

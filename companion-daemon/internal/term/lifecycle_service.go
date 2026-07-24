@@ -47,9 +47,9 @@ type StatusClearer interface{ Clear(sessionID string) }
 // classifies from the provider-owned registry record and never parses
 // provider error strings.
 type ProviderLifecycleOwner interface {
-	Stop(sessionID string, epoch int64) LifecycleActionOutcome
-	Kill(sessionID string, epoch int64) LifecycleActionOutcome
-	Delete(sessionID string, epoch int64) LifecycleActionOutcome
+	Stop(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome
+	Kill(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome
+	Delete(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) LifecycleActionOutcome
 }
 
 // LifecycleService is the PA2c lifecycle DISPATCHER. It owns no runtime,
@@ -143,7 +143,7 @@ func (s *LifecycleService) deriveEpoch(id string) (ManagedSessionRecord, error) 
 // errors or from a later federated-catalog reread.
 
 // Stop gracefully terminates a managed session through its exact owner.
-func (s *LifecycleService) Stop(ctx context.Context, id string) (LifecycleResult, error) {
+func (s *LifecycleService) Stop(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err
@@ -161,14 +161,14 @@ func (s *LifecycleService) Stop(ctx context.Context, id string) (LifecycleResult
 	if rec.Exited {
 		return LifecycleResult{SessionID: id, Action: "stop", State: LifecycleExited}, nil
 	}
-	if merr := mapOutcome(owner.Stop(id, rec.Epoch)); merr != nil {
+	if merr := mapOutcome(owner.Stop(id, rec.Epoch, deviceID, deviceEpoch)); merr != nil {
 		return LifecycleResult{}, merr
 	}
 	return LifecycleResult{SessionID: id, Action: "stop", State: LifecycleExited}, nil
 }
 
 // Kill force-terminates a managed session through its exact owner.
-func (s *LifecycleService) Kill(ctx context.Context, id string) (LifecycleResult, error) {
+func (s *LifecycleService) Kill(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err
@@ -186,7 +186,7 @@ func (s *LifecycleService) Kill(ctx context.Context, id string) (LifecycleResult
 	if rec.Exited {
 		return LifecycleResult{SessionID: id, Action: "kill", State: LifecycleKilled}, nil
 	}
-	if merr := mapOutcome(owner.Kill(id, rec.Epoch)); merr != nil {
+	if merr := mapOutcome(owner.Kill(id, rec.Epoch, deviceID, deviceEpoch)); merr != nil {
 		return LifecycleResult{}, merr
 	}
 	return LifecycleResult{SessionID: id, Action: "kill", State: LifecycleKilled}, nil
@@ -194,7 +194,7 @@ func (s *LifecycleService) Kill(ctx context.Context, id string) (LifecycleResult
 
 // Delete removes an ENDED managed session through its exact owner, then
 // clears the daemon-owned history projections for exactly that canonical id.
-func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResult, error) {
+func (s *LifecycleService) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err
@@ -212,7 +212,7 @@ func (s *LifecycleService) Delete(ctx context.Context, id string) (LifecycleResu
 	if !rec.Exited {
 		return LifecycleResult{}, ErrLifecycleNotTerminal
 	}
-	if merr := mapOutcome(owner.Delete(id, rec.Epoch)); merr != nil {
+	if merr := mapOutcome(owner.Delete(id, rec.Epoch, deviceID, deviceEpoch)); merr != nil {
 		return LifecycleResult{}, merr
 	}
 	// Daemon-owned projections for the deleted id (provider authority already

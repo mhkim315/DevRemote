@@ -32,7 +32,7 @@ func TestManagedStop_GracefulThenNonCurrent(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-C1"}
 	managed, fl, id := createInteractive(t, app)
 
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	select {
@@ -44,7 +44,7 @@ func TestManagedStop_GracefulThenNonCurrent(t *testing.T) {
 	if !rec.Exited || rec.NativeStatus != ManagedStatusExited {
 		t.Fatalf("record after stop = %+v", rec)
 	}
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("second stop not idempotent: %v", err)
 	}
 	if err := managed.SubmitPrompt(id, 1, "late"); err == nil {
@@ -64,7 +64,7 @@ func TestManagedStop_EscalatesToKill(t *testing.T) {
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
 
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("stop with TERM-ignoring child: %v", err)
 	}
 	select {
@@ -89,7 +89,7 @@ func TestManagedKill_ForceAndIdempotent(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-C3"}
 	managed, fl, id := createInteractive(t, app)
 
-	if err := managed.Kill(id, 1); err != nil {
+	if err := managed.Kill(id, 1, "", 0); err != nil {
 		t.Fatalf("kill: %v", err)
 	}
 	select {
@@ -101,7 +101,7 @@ func TestManagedKill_ForceAndIdempotent(t *testing.T) {
 	if !rec.Exited {
 		t.Fatalf("record after kill = %+v", rec)
 	}
-	if err := managed.Kill(id, 1); err != nil {
+	if err := managed.Kill(id, 1, "", 0); err != nil {
 		t.Fatalf("second kill not idempotent: %v", err)
 	}
 }
@@ -113,12 +113,12 @@ func TestManagedLifecycle_WrongStaleBinding(t *testing.T) {
 	managed, fl, id := createInteractive(t, app)
 
 	for i, err := range []error{
-		managed.Stop("codex_app_server:nope", 1),
-		managed.Kill("codex_app_server:nope", 1),
-		managed.Delete("codex_app_server:nope", 1),
-		managed.Stop(id, 9),
-		managed.Kill(id, 9),
-		managed.Delete(id, 9),
+		managed.Stop("codex_app_server:nope", 1, "", 0),
+		managed.Kill("codex_app_server:nope", 1, "", 0),
+		managed.Delete("codex_app_server:nope", 1, "", 0),
+		managed.Stop(id, 9, "", 0),
+		managed.Kill(id, 9, "", 0),
+		managed.Delete(id, 9, "", 0),
 	} {
 		if err == nil {
 			t.Fatalf("case %d: wrong/stale binding accepted", i)
@@ -141,13 +141,13 @@ func TestManagedDelete_TerminalOnly_ClearsData_LaterEventsInert(t *testing.T) {
 	managed, _, id := createInteractive(t, app)
 	store, _, _ := managed.eventStoreFor(id)
 
-	if err := managed.Delete(id, 1); err == nil || !strings.Contains(err.Error(), "not terminal") {
+	if err := managed.Delete(id, 1, "", 0); err == nil || !strings.Contains(err.Error(), "not terminal") {
 		t.Fatalf("non-terminal delete err = %v", err)
 	}
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if err := managed.Delete(id, 1); err != nil {
+	if err := managed.Delete(id, 1, "", 0); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, ok := managed.Registry().Get(id); ok {
@@ -164,7 +164,7 @@ func TestManagedDelete_TerminalOnly_ClearsData_LaterEventsInert(t *testing.T) {
 		t.Fatalf("events after delete code = %d", code)
 	}
 	// Duplicate delete: clean not-found, no side effects.
-	if err := managed.Delete(id, 1); err == nil || !strings.Contains(err.Error(), "not found") {
+	if err := managed.Delete(id, 1, "", 0); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("duplicate delete err = %v", err)
 	}
 	// A deleted session accepts no prompt.
@@ -186,7 +186,7 @@ func TestManagedLifecycle_PromptVsStopInterleavings(t *testing.T) {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("stop during turn: %v", err)
 	}
 	rec, _ := managed.Registry().Get(id)
@@ -214,7 +214,7 @@ func TestManagedLifecycle_PromptVsKill(t *testing.T) {
 		t.Fatalf("prompt: %v", err)
 	}
 	waitForStatus(t, managed.Registry(), id, ManagedStatusWorking)
-	if err := managed.Kill(id, 1); err != nil {
+	if err := managed.Kill(id, 1, "", 0); err != nil {
 		t.Fatalf("kill during turn: %v", err)
 	}
 	rec, _ := managed.Registry().Get(id)
@@ -236,13 +236,13 @@ func TestManagedNaturalExit_LifecycleAfterwards(t *testing.T) {
 
 	fl.procs[0].Kill() // natural death
 	waitForStatus(t, managed.Registry(), id, ManagedStatusExited)
-	if err := managed.Stop(id, 1); err != nil {
+	if err := managed.Stop(id, 1, "", 0); err != nil {
 		t.Fatalf("stop after natural exit: %v", err)
 	}
-	if err := managed.Kill(id, 1); err != nil {
+	if err := managed.Kill(id, 1, "", 0); err != nil {
 		t.Fatalf("kill after natural exit: %v", err)
 	}
-	if err := managed.Delete(id, 1); err != nil {
+	if err := managed.Delete(id, 1, "", 0); err != nil {
 		t.Fatalf("delete after natural exit: %v", err)
 	}
 }
@@ -347,11 +347,11 @@ func TestManagedLifecycle_ConcurrentRace(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_ = managed.Stop(id, 1)
+			_ = managed.Stop(id, 1, "", 0)
 		}()
 		go func() {
 			defer wg.Done()
-			_ = managed.Kill(id, 1)
+			_ = managed.Kill(id, 1, "", 0)
 		}()
 	}
 	wg.Wait()
@@ -359,7 +359,7 @@ func TestManagedLifecycle_ConcurrentRace(t *testing.T) {
 	if !ok || !rec.Exited {
 		t.Fatalf("record after race = %+v ok=%v", rec, ok)
 	}
-	if err := managed.Delete(id, 1); err != nil {
+	if err := managed.Delete(id, 1, "", 0); err != nil {
 		t.Fatalf("delete after race: %v", err)
 	}
 }

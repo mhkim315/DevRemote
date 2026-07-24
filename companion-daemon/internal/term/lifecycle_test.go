@@ -50,13 +50,13 @@ func TestLifecycle_DispatchTable_FailClosed(t *testing.T) {
 		"fakelegacy:s1",    // unknown adapter (would have passed the old capability gate)
 		"garbage-no-colon",
 	} {
-		if _, err := svc.Stop(context.Background(), id); err != ErrLifecycleUnsupported {
+		if _, err := svc.Stop(context.Background(), id, "", 0); err != ErrLifecycleUnsupported {
 			t.Errorf("Stop(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
 		}
-		if _, err := svc.Kill(context.Background(), id); err != ErrLifecycleUnsupported {
+		if _, err := svc.Kill(context.Background(), id, "", 0); err != ErrLifecycleUnsupported {
 			t.Errorf("Kill(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
 		}
-		if _, err := svc.Delete(context.Background(), id); err != ErrLifecycleUnsupported {
+		if _, err := svc.Delete(context.Background(), id, "", 0); err != ErrLifecycleUnsupported {
 			t.Errorf("Delete(%q) err = %v, want fail-closed ErrLifecycleUnsupported", id, err)
 		}
 	}
@@ -133,24 +133,24 @@ func TestLifecycle_StopIdempotentThenDelete(t *testing.T) {
 	svc := lcService(t, a)
 	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 
-	r1, err := svc.Stop(context.Background(), id)
+	r1, err := svc.Stop(context.Background(), id, "", 0)
 	if err != nil || r1.State != LifecycleExited {
 		t.Fatalf("first stop = %+v err=%v, want exited", r1, err)
 	}
 	// Repeated Stop is safe and returns the current terminal state.
-	r2, err := svc.Stop(context.Background(), id)
+	r2, err := svc.Stop(context.Background(), id, "", 0)
 	if err != nil || r2.State != LifecycleExited {
 		t.Fatalf("second stop = %+v err=%v, want exited", r2, err)
 	}
 	// Delete of a terminal session removes the owned record + activity.
-	if _, err := svc.Delete(context.Background(), id); err != nil {
+	if _, err := svc.Delete(context.Background(), id, "", 0); err != nil {
 		t.Fatalf("delete exited: %v", err)
 	}
 	if _, ok := svc.OwnedPTY().Get(id); ok {
 		t.Fatalf("owned record still present after delete")
 	}
 	// Repeated Delete → 404 (gone).
-	if _, err := svc.Delete(context.Background(), id); err != ErrLifecycleNotFound {
+	if _, err := svc.Delete(context.Background(), id, "", 0); err != ErrLifecycleNotFound {
 		t.Fatalf("repeated delete err = %v, want not found", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 	svc.OwnedPTY().RegisterForTest(idB, "", "b", nil)
 
 	// Running session cannot be silently deleted → 409-equivalent error.
-	if _, err := svc.Delete(context.Background(), idA); err != ErrLifecycleNotTerminal {
+	if _, err := svc.Delete(context.Background(), idA, "", 0); err != ErrLifecycleNotTerminal {
 		t.Fatalf("delete running err = %v, want not-terminal", err)
 	}
 	if _, ok := svc.OwnedPTY().Get(idA); !ok {
@@ -172,8 +172,8 @@ func TestLifecycle_DeleteRunningRejected_PreservesUnrelated(t *testing.T) {
 	}
 
 	// Stop + delete A; B must be untouched.
-	svc.Stop(context.Background(), idA)
-	if _, err := svc.Delete(context.Background(), idA); err != nil {
+	svc.Stop(context.Background(), idA, "", 0)
+	if _, err := svc.Delete(context.Background(), idA, "", 0); err != nil {
 		t.Fatalf("delete exited A: %v", err)
 	}
 	if _, ok := svc.OwnedPTY().Get(idB); !ok {
@@ -221,7 +221,7 @@ func TestLifecycle_Stop_RealProcess_TerminatesAndRetainsHistory(t *testing.T) {
 	}
 	_, sub := rec.SubscribeWithBootstrap()
 
-	res, err := svc.Stop(context.Background(), id)
+	res, err := svc.Stop(context.Background(), id, "", 0)
 	if err != nil || res.State != LifecycleExited {
 		t.Fatalf("stop = %+v err=%v, want exited", res, err)
 	}
@@ -253,7 +253,7 @@ func TestLifecycle_Stop_SigkillEscalation(t *testing.T) {
 	// early SIGTERM lands before the handler and kills it.
 	time.Sleep(300 * time.Millisecond)
 	start := time.Now()
-	res, err := svc.Stop(context.Background(), id)
+	res, err := svc.Stop(context.Background(), id, "", 0)
 	if err != nil || res.State != LifecycleExited {
 		t.Fatalf("stop(stubborn) = %+v err=%v, want exited", res, err)
 	}
@@ -265,7 +265,7 @@ func TestLifecycle_Stop_SigkillEscalation(t *testing.T) {
 func TestLifecycle_Kill_RealProcess(t *testing.T) {
 	svc := realService(t)
 	id := realManaged(t, svc, "sleep 30")
-	res, err := svc.Kill(context.Background(), id)
+	res, err := svc.Kill(context.Background(), id, "", 0)
 	if err != nil || res.State != LifecycleKilled {
 		t.Fatalf("kill = %+v err=%v, want killed", res, err)
 	}
@@ -278,8 +278,8 @@ func TestLifecycle_StopKillAndNaturalRaces(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(2)
-		go func() { defer wg.Done(); svc.Stop(context.Background(), id) }()
-		go func() { defer wg.Done(); svc.Kill(context.Background(), id) }()
+		go func() { defer wg.Done(); svc.Stop(context.Background(), id, "", 0) }()
+		go func() { defer wg.Done(); svc.Kill(context.Background(), id, "", 0) }()
 	}
 	wg.Wait()
 	entry, ok := svc.OwnedPTY().Get(id)
@@ -293,7 +293,7 @@ func TestLifecycle_StopKillAndNaturalRaces(t *testing.T) {
 	var wg2 sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg2.Add(1)
-		go func() { defer wg2.Done(); svc.Stop(context.Background(), id2) }()
+		go func() { defer wg2.Done(); svc.Stop(context.Background(), id2, "", 0) }()
 	}
 	wg2.Wait()
 	if e, ok := svc.OwnedPTY().Get(id2); !ok || !e.State.Terminal() {

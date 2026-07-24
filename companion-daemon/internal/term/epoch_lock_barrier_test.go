@@ -118,7 +118,7 @@ func TestEpochLock_PromptBarrier(t *testing.T) {
 	managed, _ := newInteractiveService(t, provider)
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
-	t.Cleanup(func() { _ = managed.Kill(id, 1) })
+	t.Cleanup(func() { _ = managed.Kill(id, 1, "", 0) })
 
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}

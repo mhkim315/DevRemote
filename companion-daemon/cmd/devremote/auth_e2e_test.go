@@ -415,7 +415,7 @@ func TestRemoteWSTicketUpgradeAndBearerExpiry(t *testing.T) {
 	if created.ID == "" {
 		t.Fatal("create response missing session id")
 	}
-	defer func() { _, _ = app.lifecycle.Kill(t.Context(), created.ID) }()
+	defer func() { _, _ = app.lifecycle.Kill(t.Context(), created.ID, "", 0) }()
 
 	ticketReq, _ := http.NewRequest(http.MethodPost,
 		srv.URL+"/api/device-auth/ws-ticket?session="+url.QueryEscape(created.ID), nil)

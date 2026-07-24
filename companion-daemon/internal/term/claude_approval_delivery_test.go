@@ -67,7 +67,7 @@ func TestClaudeDelivery_FullChain(t *testing.T) {
 	if svc.Coordinator().IdentityCount() != 0 || svc.Coordinator().PendingCount() != 0 {
 		t.Fatal("cleanup should remove identity and entries")
 	}
-	svc.Stop(id, 1)
+	svc.Stop(id, 1, "", 0)
 }
 
 func TestClaudeDelivery_NilDeps(t *testing.T) {

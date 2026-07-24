@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+
+	"devremote/companion-daemon/internal/devicetrust"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -925,6 +927,9 @@ type ManagedClaudeService struct {
 	coordinator *claudeResumeCoordinator
 
 	createBarrier func(stage string)
+
+	// 9.4-D: device authorization callback for epoch-gated mutations.
+	DeviceAuth func(deviceID string) devicetrust.AuthorizationState
 }
 
 func (s *ManagedClaudeService) barrier(stage string) {
@@ -1723,8 +1728,8 @@ func (s *ManagedClaudeService) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *ManagedClaudeService) Stop(sessionID string, epoch int64) error {
-	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch)
+func (s *ManagedClaudeService) Stop(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
+	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch, deviceID, deviceEpoch)
 	if err != nil {
 		return err
 	}
@@ -1769,8 +1774,8 @@ func (s *ManagedClaudeService) SimulateGracefulExit(sessionID string, epoch int6
 	return nil
 }
 
-func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
-	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch)
+func (s *ManagedClaudeService) Kill(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
+	rt, coord, approvals, err := s.claimTerminalIntent(sessionID, epoch, deviceID, deviceEpoch)
 	if err != nil {
 		return err
 	}
@@ -1798,6 +1803,8 @@ func (s *ManagedClaudeService) Kill(sessionID string, epoch int64) error {
 func (s *ManagedClaudeService) claimTerminalIntent(
 	sessionID string,
 	epoch int64,
+	deviceID string,
+	deviceEpoch uint64,
 ) (*claudeManagedRuntime, *claudeResumeCoordinator, *AuthoritativeApprovalStore, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1808,11 +1815,19 @@ func (s *ManagedClaudeService) claimTerminalIntent(
 	if rt.epoch != epoch {
 		return nil, nil, nil, fmt.Errorf("stale session epoch")
 	}
+	// 9.4-D: atomic device epoch check under s.mu before state change.
+	// Empty deviceID → skip (insecure-local / test path with no principal).
+	if deviceID != "" && s.DeviceAuth != nil {
+		auth := s.DeviceAuth(deviceID)
+		if !auth.Active || auth.Epoch != deviceEpoch {
+			return nil, nil, nil, fmt.Errorf("device epoch mismatch")
+		}
+	}
 	rt.terminalIntent = true
 	return rt, s.coordinator, s.approvals, nil
 }
 
-func (s *ManagedClaudeService) Delete(sessionID string, epoch int64) error {
+func (s *ManagedClaudeService) Delete(sessionID string, epoch int64, deviceID string, deviceEpoch uint64) error {
 	rec, ok := s.reg.Get(sessionID)
 	if !ok {
 		return fmt.Errorf("managed claude session not found")

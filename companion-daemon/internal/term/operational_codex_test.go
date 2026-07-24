@@ -141,7 +141,7 @@ func TestManagedCodexOperationalHooksPostCommitAndRedacted(t *testing.T) {
 		OperationalToolCallFinished,
 		OperationalStreamObserved,
 	)
-	if err := managed.Kill(sessionID, 1); err != nil {
+	if err := managed.Kill(sessionID, 1, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	events := waitOperationalKinds(t, sink, OperationalProviderInvocationFinished)
@@ -182,7 +182,7 @@ func TestManagedCodexOperationalSinkPanicCannotChangeLifecycle(t *testing.T) {
 	if _, ok := managed.Registry().Get(sessionID); !ok {
 		t.Fatal("registered session missing after sink panic")
 	}
-	if err := managed.Kill(sessionID, 1); err != nil {
+	if err := managed.Kill(sessionID, 1, "", 0); err != nil {
 		t.Fatalf("kill changed by sink panic: %v", err)
 	}
 }

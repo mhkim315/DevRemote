@@ -421,7 +421,7 @@ func TestC3DC_LiveAllowDenyProof(t *testing.T) {
 
 		// Clean exit: the production waiter, then Stop for teardown parity.
 		svc.WaitExited(sid)
-		if err := svc.Stop(sid, rec.Epoch); err != nil {
+		if err := svc.Stop(sid, rec.Epoch, "", 0); err != nil {
 			t.Logf("%s: Stop after exit: %v (tolerated when already exited)", run, err)
 		}
 

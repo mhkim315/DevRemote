@@ -390,10 +390,10 @@ func TestClaudeStopIdempotent(t *testing.T) {
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
-	if err := svc.Stop(id, rec.Epoch); err != nil {
+	if err := svc.Stop(id, rec.Epoch, "", 0); err != nil {
 		t.Fatalf("first Stop: %v", err)
 	}
-	if err := svc.Stop(id, rec.Epoch); err != nil {
+	if err := svc.Stop(id, rec.Epoch, "", 0); err != nil {
 		t.Fatalf("second Stop: %v", err)
 	}
 }
@@ -404,7 +404,7 @@ func TestClaudeKillCleanup(t *testing.T) {
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
-	if err := svc.Kill(id, rec.Epoch); err != nil {
+	if err := svc.Kill(id, rec.Epoch, "", 0); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 	// After Kill, registry must show exited.
@@ -420,13 +420,13 @@ func TestClaudeDeleteTerminalOnly(t *testing.T) {
 	id, _ := svc.CreateDetached("/tmp")
 	rec, _ := svc.Registry().Get(id)
 
-	if err := svc.Delete(id, rec.Epoch); err == nil {
+	if err := svc.Delete(id, rec.Epoch, "", 0); err == nil {
 		t.Fatal("expected error deleting non-terminal session")
 	}
-	svc.Stop(id, rec.Epoch)
+	svc.Stop(id, rec.Epoch, "", 0)
 	// Re-read after Stop — Exited flag is now true.
 	rec2, _ := svc.Registry().Get(id)
-	if err := svc.Delete(id, rec2.Epoch); err != nil {
+	if err := svc.Delete(id, rec2.Epoch, "", 0); err != nil {
 		t.Fatalf("Delete after stop: %v", err)
 	}
 	if _, ok := svc.Registry().Get(id); ok {
@@ -972,7 +972,7 @@ func TestClaudeStopInvalidatesApprovals(t *testing.T) {
 	rt.turnMu.Unlock()
 
 	rec, _ := svc.Registry().Get(id)
-	svc.Stop(id, rec.Epoch)
+	svc.Stop(id, rec.Epoch, "", 0)
 
 	// After Stop + terminate, active approvals and pending must be cleared.
 	rt.turnMu.Lock()
@@ -1239,7 +1239,7 @@ func TestClaudeStartIPCServerIntegration(t *testing.T) {
 	}
 
 	// Stop and verify deterministic cleanup.
-	svc.Stop(id, rec.Epoch)
+	svc.Stop(id, rec.Epoch, "", 0)
 	rec2, _ := svc.Registry().Get(id)
 	if !rec2.Exited {
 		t.Fatal("expected exited after stop")
@@ -2763,7 +2763,7 @@ func TestP2A_StopClearsCatalogIdentity(t *testing.T) {
 	}
 
 	// Stop must clear the identity via terminate() → ClearRuntime.
-	if err := svc.Stop(id, rt.epoch); err != nil {
+	if err := svc.Stop(id, rt.epoch, "", 0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if svc.coordinator.IdentityCount() != 0 {
@@ -2788,7 +2788,7 @@ func TestP2A_KillClearsCatalogIdentity(t *testing.T) {
 		t.Fatalf("expected 1 identity, got %d", svc.coordinator.IdentityCount())
 	}
 
-	if err := svc.Kill(id, rt.epoch); err != nil {
+	if err := svc.Kill(id, rt.epoch, "", 0); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 	if svc.coordinator.IdentityCount() != 0 {
@@ -2822,7 +2822,7 @@ func TestP2A_DeleteClearsCatalogIdentity(t *testing.T) {
 	if svc.coordinator.IdentityCount() != 0 {
 		t.Fatal("identity must be 0 after terminate, before Delete")
 	}
-	if err := svc.Delete(id, rt.epoch); err != nil {
+	if err := svc.Delete(id, rt.epoch, "", 0); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if svc.coordinator.IdentityCount() != 0 {
