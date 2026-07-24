@@ -213,10 +213,13 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		deviceEpoch = uint64(p.DeviceEpoch)
 	}
 	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
-		if h.DeviceRegistry == nil {
+		if h.Authorizer == nil {
 			return nil
 		}
-		return h.DeviceRegistry.CommitEpoch(&devicetrust.EpochToken{DeviceID: deviceID, Epoch: deviceEpoch})
+		if h.Authorizer == nil {
+			return nil
+		}
+		return h.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt)
 	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {

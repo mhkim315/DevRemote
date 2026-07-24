@@ -663,8 +663,8 @@ type ManagedCodexService struct {
 	// create and race it against Shutdown.
 	createBarrier func(stage string)
 
-	// 9.4-D: device authorization callback for epoch-gated mutations.
-	DeviceAuth func(deviceID string) devicetrust.AuthorizationState
+	// 9.4-D: mandatory mutation authorizer. Nil not permitted.
+	Authorizer devicetrust.MutationAuthorizer
 }
 
 func (s *ManagedCodexService) barrier(stage string) {
@@ -853,13 +853,11 @@ func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64, de
 		s.mu.Unlock()
 		return nil, fmt.Errorf("stale session epoch")
 	}
-	// 9.4-D: atomic device epoch check under s.mu before returning runtime.
-	// Empty deviceID → skip (insecure-local / test path with no principal).
-	if deviceID != "" && s.DeviceAuth != nil {
-		auth := s.DeviceAuth(deviceID)
-		if !auth.Active || auth.Epoch != deviceEpoch {
+	// 9.4-D: atomic device authorization under s.mu before returning runtime.
+	if s.Authorizer != nil {
+		if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionStop); err != nil {
 			s.mu.Unlock()
-			return nil, fmt.Errorf("device epoch mismatch")
+			return nil, err
 		}
 	}
 	s.mu.Unlock()

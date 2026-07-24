@@ -369,7 +369,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	term.SetQRPairBridge(newQRPairBridge(challengeStore, sessionMgr.BootID()))
 
 	h := &term.Handlers{Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, DeviceRegistry: nil, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
+		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, Authorizer: nil, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
 	// registered and the gate accepts nothing (returns `unavailable`, writes no
@@ -771,10 +771,16 @@ func (a *App) Run(ctx context.Context) error {
 	if a.sessionMgr != nil && a.deviceRegistry != nil {
 		a.sessionMgr.GetAuth = a.deviceRegistry.GetAuth
 	}
-	// 9.4-D: wire DeviceRegistry into Handlers so mutation paths can acquire
-	// epoch reservations (atomic epoch check + mutation under registry lock).
+	// 9.4-D: wire MutationAuthorizer into Handlers + managed services so
+	// every mutation path validates device active+epoch under service lock.
 	if a.handlers != nil && a.deviceRegistry != nil {
-		a.handlers.DeviceRegistry = a.deviceRegistry
+		a.handlers.Authorizer = a.deviceRegistry
+	}
+	if a.handlers != nil && a.handlers.Managed != nil && a.deviceRegistry != nil {
+		a.handlers.Managed.Authorizer = a.deviceRegistry
+	}
+	if a.handlers != nil && a.handlers.ManagedClaude != nil && a.deviceRegistry != nil {
+		a.handlers.ManagedClaude.Authorizer = a.deviceRegistry
 	}
 	// 9.4-D: wire GetAuth on the notification device store so push registration
 	// atomically validates active state + epoch before committing the binding.

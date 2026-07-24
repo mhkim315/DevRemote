@@ -263,65 +263,42 @@ func (r *DeviceRegistry) GetAuth(deviceID string) AuthorizationState {
 	return AuthorizationState{Epoch: uint64(d.Epoch), Active: true}
 }
 
-// ── 9.4-D: Token-based epoch commit protocol ──
-//
-// ReserveEpoch issues a lightweight EpochToken (lock held briefly, then
-// released). The caller performs mutation I/O with the token, then calls
-// CommitEpoch to atomically re-validate the epoch against the current
-// registry state. Revoke bumps the epoch → all in-flight tokens become
-// invalid at commit time.
-//
-// This avoids holding the registry lock across I/O (provider delivery,
-// process spawn, WebSocket writes).
+// ── 9.4-D: MutationAuthorizer — mandatory production authorization ──
 
-// EpochToken is a lightweight epoch snapshot. It does NOT hold the registry
-// lock — the lock is released before ReserveEpoch returns.
-type EpochToken struct {
-	DeviceID string
-	Epoch    uint64
+// MutationIntent classifies the mutation for authorization.
+type MutationIntent string
+
+const (
+	IntentSessionStop   MutationIntent = "session:stop"
+	IntentSessionKill   MutationIntent = "session:kill"
+	IntentSessionDelete MutationIntent = "session:delete"
+	IntentSessionCreate MutationIntent = "session:create"
+	IntentApproval      MutationIntent = "approval"
+	IntentPrompt        MutationIntent = "prompt"
+	IntentWSInput       MutationIntent = "ws:input"
+)
+
+// MutationAuthorizer is the single mandatory authorization boundary for every
+// device-gated mutation. It validates that the device exists, is active, and
+// its current epoch matches the expected epoch — all under the registry lock.
+// Nil implementations are not permitted; constructors must reject nil.
+type MutationAuthorizer interface {
+	AuthorizeCommit(deviceID string, expectedEpoch uint64, intent MutationIntent) error
 }
 
-// ReserveEpoch atomically validates that the device is active and its current
-// epoch matches expectedEpoch. On success returns a token (lock released);
-// on failure the lock is released before returning.
-// Nil registry → fail-closed (ErrStaleDevice).
-func (reg *DeviceRegistry) ReserveEpoch(deviceID string, expectedEpoch uint64) (*EpochToken, error) {
-	if reg == nil {
-		return nil, fmt.Errorf("%w: no device registry configured", ErrStaleDevice)
-	}
-	reg.mu.Lock()
-	d, ok := reg.devices[deviceID]
-	if !ok || d.Revoked() {
-		reg.mu.Unlock()
-		return nil, fmt.Errorf("%w: device is not active", ErrStaleDevice)
-	}
-	if uint64(d.Epoch) != expectedEpoch {
-		reg.mu.Unlock()
-		return nil, fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
-	}
-	tok := &EpochToken{DeviceID: deviceID, Epoch: uint64(d.Epoch)}
-	reg.mu.Unlock()
-	return tok, nil
-}
-
-// CommitEpoch atomically re-validates the token against the current registry
-// state. Returns nil if the epoch matches; ErrStaleDevice otherwise.
-// Nil token → no-op (insecure-local path).
-func (reg *DeviceRegistry) CommitEpoch(tok *EpochToken) error {
-	if tok == nil {
-		return nil
-	}
+// AuthorizeCommit validates device active+epoch under the registry lock.
+func (reg *DeviceRegistry) AuthorizeCommit(deviceID string, expectedEpoch uint64, _ MutationIntent) error {
 	if reg == nil {
 		return fmt.Errorf("%w: no device registry configured", ErrStaleDevice)
 	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
-	d, ok := reg.devices[tok.DeviceID]
+	d, ok := reg.devices[deviceID]
 	if !ok || d.Revoked() {
 		return fmt.Errorf("%w: device is not active", ErrStaleDevice)
 	}
-	if uint64(d.Epoch) != tok.Epoch {
-		return fmt.Errorf("%w: epoch changed from %d to %d", ErrStaleDevice, tok.Epoch, d.Epoch)
+	if uint64(d.Epoch) != expectedEpoch {
+		return fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
 	}
 	return nil
 }

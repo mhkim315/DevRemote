@@ -928,8 +928,8 @@ type ManagedClaudeService struct {
 
 	createBarrier func(stage string)
 
-	// 9.4-D: device authorization callback for epoch-gated mutations.
-	DeviceAuth func(deviceID string) devicetrust.AuthorizationState
+	// 9.4-D: mandatory mutation authorizer. Nil not permitted.
+	Authorizer devicetrust.MutationAuthorizer
 }
 
 func (s *ManagedClaudeService) barrier(stage string) {
@@ -1815,12 +1815,10 @@ func (s *ManagedClaudeService) claimTerminalIntent(
 	if rt.epoch != epoch {
 		return nil, nil, nil, fmt.Errorf("stale session epoch")
 	}
-	// 9.4-D: atomic device epoch check under s.mu before state change.
-	// Empty deviceID → skip (insecure-local / test path with no principal).
-	if deviceID != "" && s.DeviceAuth != nil {
-		auth := s.DeviceAuth(deviceID)
-		if !auth.Active || auth.Epoch != deviceEpoch {
-			return nil, nil, nil, fmt.Errorf("device epoch mismatch")
+	// 9.4-D: atomic device authorization under s.mu before state change.
+	if s.Authorizer != nil {
+		if err := s.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionStop); err != nil {
+			return nil, nil, nil, err
 		}
 	}
 	rt.terminalIntent = true
