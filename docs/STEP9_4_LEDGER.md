@@ -1,6 +1,6 @@
 # Step 9.4 — Secure Accountless Onboarding Ledger
 
-**Status:** V1_ACCEPT + V2 residuals closed at `8680d36ca`
+**Status:** V1_ACCEPT + V2 residuals closed — ready for V2 final
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
 **Last update:** V2 near-final
@@ -17,7 +17,7 @@
 | 9.4-D Revoke/Recovery | ACCEPTED | `5632868c6` | 44 |
 | Integrated V1 | ACCEPTED | `5632868c6` | — |
 | Pairing order fix | V1_ACCEPT | `f76042ed3` | 2 (T2) |
-| Contract + ledger sync | V2 near-final | `1a00c8c52` | — |
+| Contract + ledger sync | Ready for V2 final | `1a00c8c52` | — |
 
 ### Pairing verification order (corrected at f76042ed3)
 handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → device proof → host proof. Mismatch fails closed before challenged state.
@@ -46,4 +46,4 @@ handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → dev
 | 2026-07-24 | 9.4-D ACCEPTED at 5632868c6 (44 rounds) |
 | 2026-07-24 | V1 Integrated ACCEPT at 5632868c6 |
 | 2026-07-24 | V1 pairing order fix ACCEPT at f76042ed3 |
-| 2026-07-24 | V2 + evidence sync near-final at 1a00c8c52 |
+| 2026-07-24 | V2 + evidence sync ready for V2 final |
