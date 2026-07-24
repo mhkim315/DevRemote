@@ -1,0 +1,3 @@
+{"type":"mode","mode":"normal","sessionId":"test","unknownFutureField":"surprise"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"sessionId":"test","privateProviderField":true,"internalTraceId":"xyz-123"}
+{"type":"result","subtype":"success","sessionId":"test","extraMetadata":{"provider":"claude","version":"2.1.219"}}

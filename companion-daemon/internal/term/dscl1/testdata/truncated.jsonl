@@ -1,0 +1,5 @@
+{"type":"mode","mode":"normal","sessionId":"test"}
+{"type":"system","subtype":"init","sessionId":"test","model":"claude-sonnet-4-5-20251001"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]},"sessionId":"test"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi! I'm a helpful assistant."}]},"sessionId":"test"}
+{"type":"result","subtype":"success","s

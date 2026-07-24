@@ -1,0 +1,5 @@
+{"type":"mode","mode":"normal","sessionId":"test"}
+this is not json at all
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"valid again"}]},"sessionId":"test"}
+   indented but not json either
+{"type":"result","subtype":"success","sessionId":"test"}

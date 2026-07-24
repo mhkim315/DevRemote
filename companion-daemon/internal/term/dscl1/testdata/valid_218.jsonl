@@ -1,0 +1,9 @@
+{"type":"mode","mode":"normal","sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"system","subtype":"init","sessionId":"00000000-0000-0000-0000-000000000001","model":"claude-sonnet-4-5-20251001"}
+{"type":"ai-title","aiTitle":"DS-CL1 Conformance Test","sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"agent-name","agentName":"DS-CL1 Conformance Test","sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run exactly: echo pokitconformanceprobe"}]},"sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll run that command for you."},{"type":"tool_use","id":"toolu_01AbCdEfGhIjKlMnOpQrStUv","name":"Bash","input":{"command":"echo pokitconformanceprobe","description":"Run the conformance probe"}}]},"sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01AbCdEfGhIjKlMnOpQrStUv","content":[{"type":"text","text":"pokitconformanceprobe"}]}]},"sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The command ran successfully and output \"pokitconformanceprobe\"."}]},"sessionId":"00000000-0000-0000-0000-000000000001"}
+{"type":"result","subtype":"success","sessionId":"00000000-0000-0000-0000-000000000001","total_cost_usd":0.015}
