@@ -50,7 +50,7 @@
     "@types/react": "~19.2.0",
     "babel-preset-expo": "~56.0.0",
     "detox": "^20.51.4",
-    "expo-build-properties": "^57.0.7",
+    "expo-build-properties": "~56.0.0",
     "jest": "^30.4.2",
     "react-test-renderer": "^19.2.3",
     "ts-jest": "^29.4.11",
