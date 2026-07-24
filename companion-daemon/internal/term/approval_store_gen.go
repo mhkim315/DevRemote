@@ -647,6 +647,14 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The handler's preflight check is intentionally not sufficient: revoke may
+	// occur after it returns. Recheck inside the store lock immediately before
+	// any claim transition so a stale bearer cannot acquire execution authority.
+	if req.EpochRecheck != nil {
+		if err := req.EpochRecheck(); err != nil {
+			return ClaimResult{Outcome: ClaimStaleEpoch}
+		}
+	}
 
 	sess := s.sessions[req.SessionID]
 	if sess == nil {
@@ -788,7 +796,7 @@ type DeliveryCommit struct {
 // accepted/already_accepted with an opaque ReceiptID. A non-accepting outcome leaves
 // the record delivery_failed and retryable (bounded); an ambiguous or superseded
 // case is non-retryable. Substituted bytes (payload-digest mismatch) never commit.
-func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) DeliveryCommit {
+func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt, epochRecheck ...func() error) DeliveryCommit {
 	b := receipt.Binding
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -805,6 +813,14 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) Del
 	}
 	if receipt.ClaimToken != rec.claimToken || !b.equal(rec.binding) {
 		return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
+	}
+	// RecordDelivery is the approval commit boundary. Keep this callback inside
+	// the store lock so a revoke observed here rejects the commit without
+	// changing the accepted state.
+	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
+		if err := epochRecheck[0](); err != nil {
+			return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
+		}
 	}
 	now := s.now()
 	if rec.superseded {

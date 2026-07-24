@@ -82,6 +82,9 @@ type ApprovalDeliveryRequest struct {
 	ClaimToken string
 	Binding    ApprovalExecutionBinding
 	Payload    []byte
+	// EpochRecheck is invoked by each daemon-owned delivery boundary while its
+	// mutation lock is held, immediately before accepting/writing the action.
+	EpochRecheck func() error
 }
 
 // DeliveryReceipt is the immutable, fully-bound result of a delivery attempt.
@@ -508,6 +511,11 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if req.EpochRecheck != nil {
+		if err := req.EpochRecheck(); err != nil {
+			return DeliveryReceipt{}, "", false
+		}
+	}
 
 	// R8-A: canonical metadata validation — every variable-length field, digest
 	// format, token encoding, and ID syntax is enforced before the gate retains

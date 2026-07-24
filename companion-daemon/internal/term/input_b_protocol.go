@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -359,15 +360,28 @@ func handleTerminalInput(
 		}
 	}
 
-	if transcriptSvc != nil {
-		transcriptSvc.BeginInput(session, time.Now())
-	}
-
-	written, inErr := inputTransport.WriteInput(decoded)
+	writeArgs := []func() error{func() error {
+		if len(recheck) > 0 && recheck[0] != nil {
+			if err := recheck[0](); err != nil {
+				return err
+			}
+		}
+		// Echo suppression is part of the input mutation: perform it from the
+		// transport's lock-held callback immediately before the PTY write.
+		if transcriptSvc != nil {
+			transcriptSvc.BeginInput(session, time.Now())
+		}
+		return nil
+	}}
+	written, inErr := inputTransport.WriteInput(decoded, writeArgs...)
 	var outcome string
 	var seq uint64
 	if inErr != nil || written != len(decoded) {
-		outcome = "write_failed"
+		if errors.Is(inErr, errInputEpochRejected) {
+			outcome = "permission_denied"
+		} else {
+			outcome = "write_failed"
+		}
 	} else {
 		outcome = "accepted"
 		*inputSequence++

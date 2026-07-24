@@ -481,7 +481,7 @@ func (c *claudeResumeCoordinator) BindResumeProcess(claimToken, resumeNonce stri
 // POKIT session ID. A stale epoch, wrong adapter, or cross-session
 // binding is rejected. The full binding is preserved defensively so
 // claim→write→witness→receipt carries the same identity.
-func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding) (ResumeHandle, bool) {
+func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding ApprovalExecutionBinding, epochRecheck ...func() error) (ResumeHandle, bool) {
 	if !validCoordinatorClaimToken(claimToken) {
 		return ResumeHandle{}, false
 	}
@@ -515,6 +515,11 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	}
 	if _, dup := c.entries[claimToken]; dup {
 		return ResumeHandle{}, false
+	}
+	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
+		if err := epochRecheck[0](); err != nil {
+			return ResumeHandle{}, false
+		}
 	}
 	if len(c.entries) >= maxCoordinatorEntries {
 		return ResumeHandle{}, false

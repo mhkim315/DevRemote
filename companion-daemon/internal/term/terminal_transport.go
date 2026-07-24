@@ -1,9 +1,13 @@
 package term
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
+
+var errInputEpochRejected = errors.New("terminal input epoch rejected")
 
 // PA2d: TerminalTransport is the owned-PTY transport handle. It owns
 // generation-bound WriteInput, Resize, bounded live replay, and
@@ -81,11 +85,20 @@ func (t *TerminalTransport) RetireIfGeneration(gen int64) {
 // PB.7 Input-B: holds RLock through w.Write so Retire cannot interleave
 // between the nil-check and the write — the write is atomic from the
 // transport's perspective.
-func (t *TerminalTransport) WriteInput(data []byte) (int, error) {
+func (t *TerminalTransport) WriteInput(data []byte, epochRecheck ...func() error) (int, error) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if t.writer == nil {
 		return 0, nil // retired — fail closed
+	}
+	// Keep the authority recheck inside the same transport read lock as the
+	// actual write. This is the input-delivery linearization point: the
+	// handler's preflight check cannot be separated from the mutation by a
+	// transport retirement or another input operation.
+	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
+		if err := epochRecheck[0](); err != nil {
+			return 0, fmt.Errorf("%w: %v", errInputEpochRejected, err)
+		}
 	}
 	return t.writer.Write(data)
 }

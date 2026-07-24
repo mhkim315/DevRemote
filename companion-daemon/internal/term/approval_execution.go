@@ -240,6 +240,7 @@ const (
 	ClaimExpired         ClaimOutcome = "expired"
 	ClaimAlreadyOwned    ClaimOutcome = "already_owned"
 	ClaimStaleRuntime    ClaimOutcome = "stale_runtime"
+	ClaimStaleEpoch      ClaimOutcome = "stale_epoch"
 	ClaimRuntimeMismatch ClaimOutcome = "runtime_mismatch"
 	ClaimUnauthorized    ClaimOutcome = "unauthorized"
 	ClaimLedgerFull      ClaimOutcome = "ledger_full"
@@ -258,6 +259,10 @@ type ClaimRequest struct {
 	Requester      RequesterContext
 	IdempotencyKey string
 	AssertDigest   string
+	// EpochRecheck is an authority callback supplied by the authenticated
+	// handler. The store invokes it again while holding its mutation lock,
+	// immediately before claiming execution authority.
+	EpochRecheck func() error
 }
 
 // ClaimResult carries the outcome and, for a granted/already_accepted claim, the

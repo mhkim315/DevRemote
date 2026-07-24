@@ -525,7 +525,7 @@ func (rt *codexManagedRuntime) emitFinished() {
 // through the owned transport. Claim under lock, provider write after
 // release, claim rollback on write failure. A concurrent prompt conflicts
 // with ZERO provider write.
-func (rt *codexManagedRuntime) submitPrompt(text string) error {
+func (rt *codexManagedRuntime) submitPrompt(text string, epochRecheck ...func() error) error {
 	rt.turnMu.Lock()
 	if rt.turnClosed {
 		rt.turnMu.Unlock()
@@ -535,12 +535,29 @@ func (rt *codexManagedRuntime) submitPrompt(text string) error {
 		rt.turnMu.Unlock()
 		return fmt.Errorf("turn already active")
 	}
+	// This is the lock-internal prompt authorization boundary. The HTTP
+	// handler has already checked the bearer, but revoke can race that check.
+	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
+		if err := epochRecheck[0](); err != nil {
+			rt.turnMu.Unlock()
+			return err
+		}
+	}
 	rt.turnActive = true
 	rt.currentTurn = "" // bound below from the provider's turn/start response
 	rt.nextID++
 	id := rt.nextID
 	rt.pendingReq = id
-	rt.turnMu.Unlock()
+	// Recheck once more while turnMu is still held, immediately before the
+	// provider write. This closes the claim→write barrier window.
+	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
+		if err := epochRecheck[0](); err != nil {
+			rt.turnActive = false
+			rt.pendingReq = 0
+			rt.turnMu.Unlock()
+			return err
+		}
+	}
 
 	err := rt.send(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "turn/start",
@@ -551,12 +568,12 @@ func (rt *codexManagedRuntime) submitPrompt(text string) error {
 		},
 	})
 	if err != nil {
-		rt.turnMu.Lock()
 		rt.turnActive = false
 		rt.pendingReq = 0
 		rt.turnMu.Unlock()
 		return fmt.Errorf("prompt delivery: %w", err)
 	}
+	rt.turnMu.Unlock()
 	return nil
 }
 
@@ -786,13 +803,13 @@ func (s *ManagedCodexService) SetOperationalEventSink(sink OperationalEventSink)
 // runtime and the owned registry, enforces one-active-turn, and delivers the
 // prompt only through the owned app-server transport. Every failure is
 // fail-closed with ZERO provider write.
-func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text string) error {
+func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text string, epochRecheck ...func() error) error {
 	if err := validateManagedPrompt(text); err != nil {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	rt := s.runtimes[sessionID]
-	s.mu.Unlock()
 	if rt == nil {
 		return fmt.Errorf("managed session not found")
 	}
@@ -803,7 +820,7 @@ func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text s
 	if !ok || rec.Exited {
 		return fmt.Errorf("managed session closed")
 	}
-	return rt.submitPrompt(text)
+	return rt.submitPrompt(text, epochRecheck...)
 }
 
 // eventStoreFor resolves a session's projection store and current epoch.

@@ -540,21 +540,23 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			}
 			continue
 		}
-		// PA3 Step 6b: legacy write removed; Transcript is canonical.
-		// T3: echo privacy — suppress byte-stream projection during input.
-		// BeginInput starts suppression; the byte-stream projector
-		// auto-releases when it observes the first newline after input
-		// (structural termination, never content matching).
-		if h.Transcript != nil {
-			h.Transcript.BeginInput(session, time.Now())
-		}
 		// PA2d: controlled_pty input routes through TerminalTransport.
 		if ref.Adapter == "controlled_pty" {
 			if inputTransport == nil {
 				triggerClose(fmt.Errorf("input transport unavailable"))
 				break
 			}
-			written, inErr := inputTransport.WriteInput(msg)
+			written, inErr := inputTransport.WriteInput(msg, func() error {
+				if err := h.recheckPrincipal(ticketPrincipal); err != nil {
+					return err
+				}
+				// PA3 Step 6b/T3: begin echo suppression under the same
+				// transport lock and immediately before the PTY write.
+				if h.Transcript != nil {
+					h.Transcript.BeginInput(session, time.Now())
+				}
+				return nil
+			})
 			if inErr != nil || written != len(msg) {
 				if inErr != nil {
 					log.Printf("WS input write err: %v", inErr)

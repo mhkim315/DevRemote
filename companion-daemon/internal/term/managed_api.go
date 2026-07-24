@@ -207,7 +207,9 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text); err != nil {
+	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
+		return h.recheckEpoch(r)
+	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound

@@ -96,6 +96,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Runtime:        runtime,
 		Requester:      requester,
 		IdempotencyKey: req.IdempotencyKey,
+		EpochRecheck:   func() error { return h.recheckEpoch(r) },
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
@@ -133,9 +134,10 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		delivery = NewUnavailableApprovalDelivery()
 	}
 	receipt := delivery.Deliver(ApprovalDeliveryRequest{
-		ClaimToken: claim.Token,
-		Binding:    claim.Binding,
-		Payload:    claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
+		ClaimToken:   claim.Token,
+		Binding:      claim.Binding,
+		Payload:      claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
+		EpochRecheck: func() error { return h.recheckEpoch(r) },
 	})
 	// RecordDelivery is the approval commit boundary. Recheck once more so a
 	// revoke racing with provider delivery cannot commit the old bearer action.
@@ -143,7 +145,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
 		return
 	}
-	commit := h.Approvals.RecordDelivery(receipt)
+	commit := h.Approvals.RecordDelivery(receipt, func() error { return h.recheckEpoch(r) })
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
 		return
@@ -186,6 +188,8 @@ func claimOutcomeHTTP(o ClaimOutcome) (int, string) {
 		return http.StatusConflict, "retry_exhausted"
 	case ClaimStaleRuntime:
 		return http.StatusConflict, "stale_runtime"
+	case ClaimStaleEpoch:
+		return http.StatusConflict, "stale_epoch"
 	case ClaimRuntimeMismatch:
 		return http.StatusConflict, "runtime_mismatch"
 	case ClaimUnauthorized:

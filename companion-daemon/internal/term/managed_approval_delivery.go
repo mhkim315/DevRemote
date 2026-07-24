@@ -341,6 +341,13 @@ func (rt *codexManagedRuntime) deliverResponse(req ApprovalDeliveryRequest, payl
 			return fail(DeliveryRejected) // provider resolved: zero writes
 		}
 	}
+	if req.EpochRecheck != nil {
+		if err := req.EpochRecheck(); err != nil {
+			delete(rt.respWaiters, pend.idInt)
+			rt.respMu.Unlock()
+			return fail(DeliveryStaleRuntime)
+		}
+	}
 	w.state = waiterStateWriteClaimed
 	rt.respMu.Unlock()
 
