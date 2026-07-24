@@ -61,5 +61,5 @@ const styles = StyleSheet.create({
   transcriptDegradedText: { color: '#f88', fontSize: 12 },
   transcriptOutputBlock: { marginVertical: 2 },
   transcriptAgentLabel: { color: '#888', fontSize: 10, marginBottom: 2 },
-  transcriptOutputText: { color: '#ccc', fontSize: 13, fontFamily: 'monospace' },
+  transcriptOutputText: { color: '#ccc', fontSize: 12, fontFamily: 'monospace' },
 });

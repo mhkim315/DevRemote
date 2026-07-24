@@ -934,7 +934,10 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if !a.config.InsecureLocalOnly {
-		a.tunnel = a.startTunnel()
+		// BUG-012: only start a tunnel if one isn't already running.
+		if a.tunnel == nil {
+			a.tunnel = a.startTunnel()
+		}
 	}
 
 	// 4. Serve HTTP in background; wait for shutdown signal or HTTP error.

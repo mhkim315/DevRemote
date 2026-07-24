@@ -1196,7 +1196,7 @@ const styles = StyleSheet.create({
   sendStatus: {color:'#45EBE9', fontSize:14, fontWeight:'700', marginHorizontal:4},
   sendFailed: {color:'#f85149'},
   // PB.7 Input-A: read-only indicator bar shown when terminal input is denied.
-  readOnlyBar: { backgroundColor: 'rgba(248, 81, 73, 0.12)', borderTopWidth: 1, borderTopColor: '#f85149', paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center' },
+  readOnlyBar: { backgroundColor: 'rgba(42, 42, 42, 0.12)', borderTopWidth: 1, borderTopColor: '#555', paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center' },
   readOnlyText: { color: '#f85149', fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
 
   activityContainer: {
