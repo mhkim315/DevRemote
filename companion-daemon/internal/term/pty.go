@@ -65,10 +65,12 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// M1 safe create: profileId present -> daemon-owned launch. The daemon
 		// generates the canonical ID and resolves the executable by policy.
 		if req.ProfileID != "" {
-			if err := h.recheckEpoch(r); err != nil {
+			epRes, err := h.reserveEpoch(r)
+			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
+			defer epRes.Release()
 			h.createFromProfile(w, r, req)
 			return
 		}
@@ -109,10 +111,12 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 					writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 					return
 				}
-				if err := h.recheckEpoch(r); err != nil {
+				epRes, err := h.reserveEpoch(r)
+				if err != nil {
 					http.Error(w, err.Error(), http.StatusConflict)
 					return
 				}
+				defer epRes.Release()
 				res, lerr := h.Lifecycle.Delete(r.Context(), id)
 				writeLifecycleResult(w, res, lerr)
 				return
@@ -130,12 +134,19 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", 405)
 }
 
-// recheckEpoch validates that the request principal's device epoch still matches
-// the authority state. Call before any mutation to guard against revocation that
-// occurred between middleware authentication and the handler commit.
-func (h *Handlers) recheckEpoch(r *http.Request) error {
+// reserveEpoch acquires an epoch reservation that holds the registry lock
+// across the mutation commit. The caller MUST defer epRes.Release(). On failure
+// the lock is released before returning; on success the caller owns it.
+// Nil principal → nil reservation (insecure-local mode).
+func (h *Handlers) reserveEpoch(r *http.Request) (*devicetrust.EpochReservation, error) {
 	p := devicetrust.PrincipalFromContext(r.Context())
-	return h.recheckPrincipal(p)
+	if p == nil {
+		return nil, nil // insecure-local: no principal to check
+	}
+	if h.DeviceRegistry == nil {
+		return nil, nil // no authority configured
+	}
+	return h.DeviceRegistry.ReserveEpoch(p.DeviceID, uint64(p.DeviceEpoch))
 }
 
 // recheckPrincipal is used by long-lived WebSocket connections whose
@@ -822,10 +833,12 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		// The command broker is a remote terminal-input mutation. Guard the
 		// enqueue boundary as well as the WebSocket transport path.
-		if err := h.recheckEpoch(r); err != nil {
+		epRes, err := h.reserveEpoch(r)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		defer epRes.Release()
 		body, _ := io.ReadAll(r.Body)
 		h.Cmds.Put(session, body)
 		log.Printf("CMD POST [%s]: %q", session, string(body))

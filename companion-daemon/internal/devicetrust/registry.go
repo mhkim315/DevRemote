@@ -263,6 +263,44 @@ func (r *DeviceRegistry) GetAuth(deviceID string) AuthorizationState {
 	return AuthorizationState{Epoch: uint64(d.Epoch), Active: true}
 }
 
+// ── 9.4-D: Epoch reservation protocol ──
+
+// EpochReservation holds the registry lock across a mutation so that revoke
+// cannot interleave between the epoch check and the mutation commit. The
+// caller MUST call Release() after the mutation completes; typically via
+// defer. Release is safe to call on a nil receiver.
+type EpochReservation struct {
+	reg      *DeviceRegistry
+	DeviceID string
+	Epoch    uint64
+}
+
+// Release unlocks the registry. Safe to call on a nil receiver.
+func (r *EpochReservation) Release() {
+	if r == nil || r.reg == nil {
+		return
+	}
+	r.reg.mu.Unlock()
+}
+
+// ReserveEpoch atomically validates that the device is active and its current
+// epoch matches expectedEpoch. On success the registry lock is HELD and the
+// caller must call Release() to drop it. On failure the lock is released
+// before returning.
+func (reg *DeviceRegistry) ReserveEpoch(deviceID string, expectedEpoch uint64) (*EpochReservation, error) {
+	reg.mu.Lock()
+	d, ok := reg.devices[deviceID]
+	if !ok || d.Revoked() {
+		reg.mu.Unlock()
+		return nil, fmt.Errorf("%w: device is not active", ErrStaleDevice)
+	}
+	if uint64(d.Epoch) != expectedEpoch {
+		reg.mu.Unlock()
+		return nil, fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
+	}
+	return &EpochReservation{reg: reg, DeviceID: deviceID, Epoch: uint64(d.Epoch)}, nil
+}
+
 // GetEpoch returns the current authorization epoch for a device.
 // Returns 0 if the device is unknown (epoch 0 means never paired).
 func (r *DeviceRegistry) GetEpoch(deviceID string) int64 {

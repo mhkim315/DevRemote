@@ -81,12 +81,16 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
-	// The bearer may have been revoked/replaced after authentication. Recheck
-	// immediately before the store claim, which is the first approval mutation.
-	if err := h.recheckEpoch(r); err != nil {
+	// The bearer may have been revoked/replaced after authentication. Acquire
+	// an epoch reservation before the first approval mutation. The reservation
+	// holds the registry lock so revoke cannot interleave during the entire
+	// claim→delivery→commit window.
+	epRes, err := h.reserveEpoch(r)
+	if err != nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
 		return
 	}
+	defer epRes.Release()
 
 	claim := h.Approvals.ClaimForExecution(ClaimRequest{
 		SessionID:      sessionID,
@@ -96,7 +100,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Runtime:        runtime,
 		Requester:      requester,
 		IdempotencyKey: req.IdempotencyKey,
-		EpochRecheck:   func() error { return h.recheckEpoch(r) },
+		EpochRecheck:   func() error { return nil },
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
@@ -117,17 +121,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
-	// Delivery can invoke provider/runtime side effects, so authorization must
-	// still be current after the claim and immediately before the delivery call.
-	if err := h.recheckEpoch(r); err != nil {
-		// Release the claim as a stale, non-accepting delivery. This does not
-		// grant an action and keeps the record from being left permanently owned.
-		h.Approvals.RecordDelivery(DeliveryReceipt{
-			Outcome: DeliveryStaleRuntime, ClaimToken: claim.Token, Binding: claim.Binding,
-		})
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
-		return
-	}
+	// Reservation held: epoch cannot change during delivery.
 
 	delivery := h.ApprovalDelivery
 	if delivery == nil {
@@ -137,15 +131,10 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		ClaimToken:   claim.Token,
 		Binding:      claim.Binding,
 		Payload:      claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
-		EpochRecheck: func() error { return h.recheckEpoch(r) },
+		EpochRecheck: func() error { return nil },
 	})
-	// RecordDelivery is the approval commit boundary. Recheck once more so a
-	// revoke racing with provider delivery cannot commit the old bearer action.
-	if err := h.recheckEpoch(r); err != nil {
-		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
-		return
-	}
-	commit := h.Approvals.RecordDelivery(receipt, func() error { return h.recheckEpoch(r) })
+	// Reservation held: epoch cannot change during commit.
+	commit := h.Approvals.RecordDelivery(receipt, func() error { return nil })
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
 		return

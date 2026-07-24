@@ -19,12 +19,13 @@ type Handlers struct {
 	InsecureLocalOnly bool                        // E6: accepts dev-token in auth middleware
 	Lifecycle         *LifecycleService           // M2: Stop/Kill/Delete for managed sessions
 	// M2.5-4: device authentication (concrete types from devicetrust)
-	WSTickets    *devicetrust.WSTicketStore
-	ConnRegistry *devicetrust.AuthenticatedConnRegistry
-	SessionMgr   *devicetrust.DeviceSessionManager
-	HostIdentity *devicetrust.HostIdentity // M2.5-4: for ticket host binding
-	Audit        devicetrust.AuditLog      // M2.5-5: minimal local audit (nil ⇒ no audit)
-	Transcript   *transcript.Service       // T3: bounded session-isolated Transcript store + projectors
+	WSTickets      *devicetrust.WSTicketStore
+	ConnRegistry   *devicetrust.AuthenticatedConnRegistry
+	SessionMgr     *devicetrust.DeviceSessionManager
+	DeviceRegistry *devicetrust.DeviceRegistry // 9.4-D: epoch reservation for mutation handlers
+	HostIdentity   *devicetrust.HostIdentity   // M2.5-4: for ticket host binding
+	Audit          devicetrust.AuditLog        // M2.5-5: minimal local audit (nil ⇒ no audit)
+	Transcript     *transcript.Service         // T3: bounded session-isolated Transcript store + projectors
 	// A1 remediation: RuntimeOf resolves the CURRENT server-derived runtime identity
 	// (adapter/provider version + launch/stream generation) for a session, used by
 	// the atomic claim and the pre-delivery runtime revalidation. nil ⇒ no runtime

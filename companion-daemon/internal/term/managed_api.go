@@ -203,12 +203,14 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 	}
 	// SubmitPrompt reserves the active turn and writes to the provider. The
 	// request principal must still be authorized at that mutation boundary.
-	if err := h.recheckEpoch(r); err != nil {
+	epRes, err := h.reserveEpoch(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	defer epRes.Release()
 	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
-		return h.recheckEpoch(r)
+		return nil // reservation held by caller
 	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
@@ -246,10 +248,12 @@ func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	// Stop/kill/delete all mutate provider-owned session state. Recheck after
 	// decoding and immediately before dispatching the selected operation.
-	if err := h.recheckEpoch(r); err != nil {
+	epRes, err := h.reserveEpoch(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	defer epRes.Release()
 	if err := op(id, req.Epoch); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
@@ -314,10 +318,12 @@ func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.R
 		return
 	}
 	id := r.PathValue("id")
-	if err := h.recheckEpoch(r); err != nil {
+	epRes, err := h.reserveEpoch(r)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	defer epRes.Release()
 	if err := op(id, req.Epoch); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
