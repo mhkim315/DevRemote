@@ -8,9 +8,9 @@ import (
 	"bytes"
 	"context"
 
-	"devremote/companion-daemon/internal/devicetrust"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"devremote/companion-daemon/internal/devicetrust"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
