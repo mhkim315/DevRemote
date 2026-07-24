@@ -818,6 +818,12 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 		session = "devremote"
 	}
 	if r.Method == "POST" {
+		// The command broker is a remote terminal-input mutation. Guard the
+		// enqueue boundary as well as the WebSocket transport path.
+		if err := h.recheckEpoch(r); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		h.Cmds.Put(session, body)
 		log.Printf("CMD POST [%s]: %q", session, string(body))

@@ -81,6 +81,12 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
+	// The bearer may have been revoked/replaced after authentication. Recheck
+	// immediately before the store claim, which is the first approval mutation.
+	if err := h.recheckEpoch(r); err != nil {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
+		return
+	}
 
 	claim := h.Approvals.ClaimForExecution(ClaimRequest{
 		SessionID:      sessionID,
@@ -110,6 +116,17 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
+	// Delivery can invoke provider/runtime side effects, so authorization must
+	// still be current after the claim and immediately before the delivery call.
+	if err := h.recheckEpoch(r); err != nil {
+		// Release the claim as a stale, non-accepting delivery. This does not
+		// grant an action and keeps the record from being left permanently owned.
+		h.Approvals.RecordDelivery(DeliveryReceipt{
+			Outcome: DeliveryStaleRuntime, ClaimToken: claim.Token, Binding: claim.Binding,
+		})
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
+		return
+	}
 
 	delivery := h.ApprovalDelivery
 	if delivery == nil {
@@ -120,6 +137,12 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Binding:    claim.Binding,
 		Payload:    claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
 	})
+	// RecordDelivery is the approval commit boundary. Recheck once more so a
+	// revoke racing with provider delivery cannot commit the old bearer action.
+	if err := h.recheckEpoch(r); err != nil {
+		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
+		return
+	}
 	commit := h.Approvals.RecordDelivery(receipt)
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
