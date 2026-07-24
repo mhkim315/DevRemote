@@ -40,7 +40,7 @@ var certifiedClaudeCatalog = []catalogEntry{
 	{
 		CatalogActionID: "claude.bash.approval_probe.v1",
 		Provider:        "claude_headless",
-		Version:         "2.1.209",
+		Version:         CertifiedClaudeVersion,
 		ToolName:        "Bash",
 		Command:         "echo pokitclaudeapprovalprobe",
 		Summary:         "Run Claude approval verification probe",

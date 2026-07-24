@@ -25,11 +25,6 @@ import (
 	"devremote/companion-daemon/internal/sessionid"
 )
 
-// certifiedClaudeAuthorityVersion is the exact C0D-certified provider
-// version. Provider name/version alone never certifies an action; this
-// constant only gates the install transition and the launch tuple.
-const certifiedClaudeAuthorityVersion = "2.1.209"
-
 // claudeCertifiedOptions returns the exact certified action set for the
 // single catalog entry (C3D contract §3): allow_once → approve and
 // deny → reject. Nothing else is certified.
@@ -90,13 +85,13 @@ func (s *ManagedClaudeService) InstallApprovalExecution(store *AuthoritativeAppr
 	if s.actionable {
 		return nil, nil, fmt.Errorf("claude approval execution install: already installed")
 	}
-	if s.cfg.AuthorityVersion != certifiedClaudeAuthorityVersion || !validVersion(s.cfg.AuthorityVersion) {
+	if s.cfg.AuthorityVersion != CertifiedClaudeVersion || !validVersion(s.cfg.AuthorityVersion) {
 		return nil, nil, fmt.Errorf("claude approval execution install: authority version %q is not the certified %q",
-			s.cfg.AuthorityVersion, certifiedClaudeAuthorityVersion)
+			s.cfg.AuthorityVersion, CertifiedClaudeVersion)
 	}
-	if s.cfg.Version != certifiedClaudeAuthorityVersion {
+	if s.cfg.Version != CertifiedClaudeVersion {
 		return nil, nil, fmt.Errorf("claude approval execution install: pinned version %q is not the certified %q",
-			s.cfg.Version, certifiedClaudeAuthorityVersion)
+			s.cfg.Version, CertifiedClaudeVersion)
 	}
 	if s.cfg.PinnedPath == "" {
 		return nil, nil, fmt.Errorf("claude approval execution install: pinned path not configured")

@@ -2,6 +2,7 @@ package term
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,8 +91,8 @@ func (a productionClaudeAttestor) Certify(exe string) error {
 	if err != nil {
 		return fmt.Errorf("claude certify: %w", err)
 	}
-	if extractVersion(vs) != a.cfg.Version {
-		return fmt.Errorf("claude certify: version mismatch: want %q, got %q", a.cfg.Version, vs)
+	if got := extractVersion(vs); got != a.cfg.Version {
+		log.Printf("claude certify: version changed — certified %q, installed %q (continuing with path+digest checks)", a.cfg.Version, got)
 	}
 
 	resolved, err := filepath.EvalSymlinks(exe)

@@ -976,8 +976,8 @@ func NewManagedClaudeService(authorizer devicetrust.MutationAuthorizer, cfg Clau
 func NewManagedClaudeServiceForTest(launcher ManagedLauncher, attestor ClaudeAttestor, authorizer devicetrust.MutationAuthorizer) *ManagedClaudeService {
 	s, err := NewManagedClaudeService(authorizer, ClaudeEntryConfig{
 		Bin:              "/pinned/test/claude",
-		Version:          "2.1.209",
-		AuthorityVersion: "2.1.209",
+		Version:          CertifiedClaudeVersion,
+		AuthorityVersion: CertifiedClaudeVersion,
 		PinnedPath:       "/pinned/test/claude",
 		PinnedDigest:     "0000000000000000000000000000000000000000000000000000000000000000",
 	}, launcher, attestor)

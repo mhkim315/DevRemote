@@ -131,7 +131,7 @@ func buildClaudeLaunchCertification(cfg ClaudeEntryConfig, proc ManagedProcess, 
 		c.Result, c.Reason = claudeCertFailed, "platform not certified"
 	case len(cfg.PinnedDigest) != 64 || !allHex(cfg.PinnedDigest):
 		c.Result, c.Reason = claudeCertFailed, "pinned digest not configured"
-	case cfg.Version != certifiedClaudeAuthorityVersion:
+	case cfg.Version != CertifiedClaudeVersion:
 		c.Result, c.Reason = claudeCertFailed, "version not certified"
 	default:
 		c.Result = claudeCertCertified
@@ -158,7 +158,7 @@ func validClaudeLaunchCertification(cert ClaudeLaunchCertification, rec *Managed
 	if !claudePlatformCertified(cert.OS, cert.Arch) {
 		return false
 	}
-	if cert.ArtifactVersion != certifiedClaudeAuthorityVersion || cert.ArtifactVersion != cfg.Version {
+	if cert.ArtifactVersion != CertifiedClaudeVersion || cert.ArtifactVersion != cfg.Version {
 		return false
 	}
 	if len(cert.ArtifactDigest) != 64 || !allHex(cert.ArtifactDigest) || cert.ArtifactDigest != cfg.PinnedDigest {
