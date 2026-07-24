@@ -2,8 +2,8 @@
 
 **Status:** IMPLEMENTATION CONTRACT — ACCEPTED at `238f063a8`
 
-**Branch:** `feature/canonical-timeline-foundation`  
-**Prerequisite:** Step 9.3 accepted at `f7033b86c`  
+**Branch:** `feature/canonical-timeline-foundation`
+**Prerequisite:** Step 9.3 accepted at `f7033b86c`
 **Purpose:** accountless onboarding from a clean macOS install through a trusted
 Android device, without adding an account-registration authority.
 

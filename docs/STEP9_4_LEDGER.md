@@ -1,6 +1,6 @@
 # Step 9.4 — Secure Accountless Onboarding Ledger
 
-**Status:** V1_ACCEPT + V2 residuals closed — ready for V2 final
+**Status:** IMPLEMENTATION ACCEPTED — PHYSICAL GATE + DOCS PENDING
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
 **Last update:** V2 final-ready (ledger cleanup SHA 694eb73ee)

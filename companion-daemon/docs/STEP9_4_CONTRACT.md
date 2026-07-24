@@ -1,9 +1,9 @@
 # STEP 9.4 — Secure Accountless Onboarding Contract
 
-**Status:** IMPLEMENTATION CONTRACT — PENDING IMPLEMENTATION
+**Status:** IMPLEMENTATION CONTRACT — ACCEPTED at `238f063a8`
 
-**Branch:** `feature/canonical-timeline-foundation`  
-**Prerequisite:** Step 9.3 accepted at `f7033b86c`  
+**Branch:** `feature/canonical-timeline-foundation`
+**Prerequisite:** Step 9.3 accepted at `f7033b86c`
 **Purpose:** accountless onboarding from a clean macOS install through a trusted
 Android device, without adding an account-registration authority.
 
@@ -210,4 +210,5 @@ Stop and reject if a change:
   runtime authority boundaries;
 - treats emulator evidence as SM-S926N physical-device proof; or
 - claims a physical-device action without `USER_ACTION_REQUIRED` evidence.
+
 
