@@ -294,6 +294,17 @@ func (s *Service) FeedBytesBatch(sessionID string, segments []TranscriptSegment)
 	s.store.Append(sessionID, segments)
 }
 
+// R4: FeedAgentSegments appends agent-event-sourced segments and records
+// agent event presence so they become the primary transcript source.
+// Used by managed-to-transcript projectors (Codex, Claude).
+func (s *Service) FeedAgentSegments(sessionID string, segments []TranscriptSegment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	arb := s.ensureArbiter(sessionID)
+	arb.RecordAgentEvent()
+	s.store.Append(sessionID, segments)
+}
+
 func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) TranscriptResponse {
 	s.mu.Lock()
 	arb := s.arbiters[sessionID]

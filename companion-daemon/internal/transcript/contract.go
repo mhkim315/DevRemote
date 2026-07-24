@@ -286,6 +286,12 @@ func NewUIOmittedSegment(sessionID string, observedAt time.Time) TranscriptSegme
 
 // ── Internal helpers ──
 
+// BoundedText truncates s to at most MaxTextBytes without splitting multi-byte
+// UTF-8. Used by managed-to-transcript projectors (R4).
+func BoundedText(s string) string {
+	return boundedText(s, MaxTextBytes)
+}
+
 func boundedText(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s

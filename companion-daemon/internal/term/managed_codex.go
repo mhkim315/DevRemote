@@ -12,7 +12,9 @@ import (
 	"bytes"
 	"context"
 
+	agentcontract "devremote/companion-daemon/internal/agent/contract"
 	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/transcript"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -192,7 +194,10 @@ type codexManagedRuntime struct {
 	// operational is the optional neutral post-commit observation seam. It is
 	// copied before the pump starts and never participates in provider state.
 	operational OperationalEventSink
-	finishOnce  sync.Once
+	// R4: transcriptHook projects managed events into the common Transcript
+	// store. nil means projection is disabled. Called from appendEvent.
+	transcriptHook func(kind ManagedEventKind, text string, observedAt time.Time)
+	finishOnce     sync.Once
 }
 
 func newCodexManagedRuntime(authorizer devicetrust.MutationAuthorizer, proc ManagedProcess, epoch int64, reg *ManagedSessionRegistry) *codexManagedRuntime {
@@ -490,6 +495,61 @@ func (rt *codexManagedRuntime) appendEvent(kind ManagedEventKind, text string) {
 	if rt.events != nil {
 		rt.events.append(kind, text)
 	}
+	// R4: project managed events into the common Transcript store.
+	if rt.transcriptHook != nil {
+		rt.transcriptHook(kind, text, time.Now())
+	}
+}
+
+// R4: projectCodexEvent maps a bounded Codex ManagedEvent into TranscriptSegment
+// values for the common Transcript store. Only bounded facts cross the seam:
+// Codex JSON-RPC parsing stays Codex-owned. Returns nil for unmapped kinds.
+func projectCodexEvent(sessionID string, kind ManagedEventKind, text string, observedAt time.Time) []transcript.TranscriptSegment {
+	switch kind {
+	case ManagedEventAssistant:
+		return []transcript.TranscriptSegment{{
+			SessionID:       sessionID,
+			Kind:            transcript.KindAgentEvent,
+			Source:          transcript.SourceAgentEvent,
+			Text:            transcript.BoundedText(text),
+			AgentKind:       "codex",
+			EventType:       "assistant_message",
+			ObservedAt:      observedAt,
+			ContractVersion: transcript.ContractVersion,
+		}}
+	case ManagedEventWorking:
+		return []transcript.TranscriptSegment{{
+			SessionID:       sessionID,
+			Kind:            transcript.KindAgentEvent,
+			Source:          transcript.SourceAgentEvent,
+			AgentKind:       "codex",
+			EventType:       "working",
+			ObservedAt:      observedAt,
+			ContractVersion: transcript.ContractVersion,
+		}}
+	case ManagedEventCompleted:
+		return []transcript.TranscriptSegment{{
+			SessionID:       sessionID,
+			Kind:            transcript.KindAgentEvent,
+			Source:          transcript.SourceAgentEvent,
+			AgentKind:       "codex",
+			EventType:       "completed",
+			ObservedAt:      observedAt,
+			ContractVersion: transcript.ContractVersion,
+		}}
+	case ManagedEventExited:
+		return []transcript.TranscriptSegment{{
+			SessionID:       sessionID,
+			Kind:            transcript.KindAgentEvent,
+			Source:          transcript.SourceAgentEvent,
+			AgentKind:       "codex",
+			EventType:       "exited",
+			ObservedAt:      observedAt,
+			ContractVersion: transcript.ContractVersion,
+		}}
+	default:
+		return nil
+	}
 }
 
 func (rt *codexManagedRuntime) currentItemIdentity(params map[string]any) (string, string, bool) {
@@ -646,6 +706,10 @@ type ManagedCodexService struct {
 	// nil is the default and preserves the pre-Timeline behavior.
 	operational OperationalEventSink
 
+	// R4: transcript service for projecting managed events into the common
+	// Transcript store. nil means projection is disabled.
+	transcriptSvc *transcript.Service
+
 	// pumpObserver is a NARROW test seam (nil in production) copied onto each
 	// runtime before its pump starts.
 	pumpObserver func(sessionID, method string)
@@ -656,6 +720,13 @@ type ManagedCodexService struct {
 
 	// 9.4-D: mandatory mutation authorizer. Nil not permitted.
 	authorizer devicetrust.MutationAuthorizer
+}
+
+// SetTranscriptService wires the common Transcript service for managed-to-
+// transcript projection (R4). Nil disables projection. Safe to call before
+// the first Create; not safe for concurrent use with Create.
+func (s *ManagedCodexService) SetTranscriptService(svc *transcript.Service) {
+	s.transcriptSvc = svc
 }
 
 func (s *ManagedCodexService) barrier(stage string) {
@@ -1138,6 +1209,24 @@ func (s *ManagedCodexService) create(cwd string, certification bool, deviceID st
 	if s.pumpObserver != nil {
 		obs := s.pumpObserver
 		rt.observer = func(method string) { obs(id, method) }
+	}
+	// R4: wire Codex managed events into the common Transcript projection.
+	// The projector closure keeps Codex parsing Codex-owned while projecting
+	// bounded facts (kind + text) into TranscriptSegment format.
+	if s.transcriptSvc != nil {
+		sessionID := id
+		// Set correlation so AgentEvent becomes the primary transcript source.
+		s.transcriptSvc.SetCorrelation(sessionID, transcript.CorrelationState{
+			SessionID:   sessionID,
+			Correlation: agentcontract.CorrelationManagedLaunch,
+			Provider:    "codex",
+		})
+		rt.transcriptHook = func(kind ManagedEventKind, text string, observedAt time.Time) {
+			segs := projectCodexEvent(sessionID, kind, text, observedAt)
+			if len(segs) > 0 {
+				s.transcriptSvc.FeedAgentSegments(sessionID, segs)
+			}
+		}
 	}
 	rt.emitOperational(OperationalProviderInvocationStarted, rt.runtimeID, "runtime/registered", rt.runtimeID)
 	go rt.pump()

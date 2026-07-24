@@ -388,6 +388,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managed.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed approval store: %w", err)
 		}
+		// R4: wire Codex managed events into the common Transcript projection.
+		managed.SetTranscriptService(transcriptSvc)
 	}
 
 	// C1D: native managed Claude runtime — default-off. The service owns the
