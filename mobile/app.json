@@ -33,6 +33,7 @@
       ]
     },
     "plugins": [
+      "./plugins/withCleartextTraffic",
       [
         "expo-notifications",
         {
