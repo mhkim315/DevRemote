@@ -1,0 +1,10 @@
+{
+  "source": "1bdf6b6323e405d67a3634b7ae828416986da367",
+  "daemon_sha256": "3b1d027620a6c62b69b38fa35c2d84a4b27d0693bdca004b08c813bd51a67576",
+  "apk_sha256": "8ed1f37bd816c21513cb1fed08175d018085047feabae07b0a96c0a58d671da1",
+  "daemon_vcs_revision": "vcs.revision=1bdf6b6323e405d67a3634b7ae828416986da367",
+  "daemon_vcs_modified": "false",
+  "go_version": "go1.26.5",
+  "macos": "26.5.1",
+  "build_time_utc": "2026-07-24T14:40:08Z"
+}
