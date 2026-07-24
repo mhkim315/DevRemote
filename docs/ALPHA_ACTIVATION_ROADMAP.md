@@ -1,6 +1,6 @@
 # POKIT Base Alpha Activation Roadmap
 
-**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c` (EVID: `STEP9_3_EVIDENCE.md`); STEP 9.4 NOT STARTED
+**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c`; STEP 9.4 ACCEPTED at `238f063a8` (EVID: `STEP9_4_EVIDENCE.md`); STEP 9.5 NOT STARTED
 
 **Prerequisite:** Step 9.0 authority reconciliation received independent
 closeout at `62a50f0a8`. Step 9.1 Operational Timeline staging received

@@ -1,6 +1,6 @@
 # STEP 9.4 — Secure Accountless Onboarding Contract
 
-**Status:** IMPLEMENTATION CONTRACT — PENDING IMPLEMENTATION
+**Status:** IMPLEMENTATION CONTRACT — ACCEPTED at `238f063a8`
 
 **Branch:** `feature/canonical-timeline-foundation`  
 **Prerequisite:** Step 9.3 accepted at `f7033b86c`  
