@@ -167,11 +167,8 @@ func renderQR(data string) func() {
 		return func() {}
 	}
 
-	// Selection: TTY + known fitting dimensions → ANSI; otherwise PNG.
-	if ansiOK(code) {
-		renderQRANSI(code)
-		return func() {}
-	}
+	// Always generate PNG for reliable mobile scanning; ANSI terminal QR
+	// is not scannable by phone cameras reliably enough for production use.
 	pngPath, err := renderQRPNG(code)
 	if err != nil {
 		// Secure creation failure is fatal.
