@@ -17,9 +17,9 @@
 | 9.4-D Revoke/Recovery | ACCEPTED | `5632868c6` | 44 |
 | Integrated V1 | ACCEPTED | `5632868c6` | — |
 | Pairing order fix | V1_ACCEPT | `f76042ed3` | 2 (T2) |
-| Contract + ledger sync | Pending V2 | `8680d36ca` | — |
+| Contract + ledger sync | V2 near-final | `1a00c8c52` | — |
 
-### Pairing verification order (corrected)
+### Pairing verification order (corrected at f76042ed3)
 handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → device proof → host proof. Mismatch fails closed before challenged state.
 
 ## Total: 118 rounds, 73 V1 REJECTs
@@ -32,8 +32,7 @@ handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → dev
 - T2 budget: 7 calls (D3-A:2, B/C:1, IPC:1, LINEARIZATION:1, ref:1, V1 integ:1)
 
 ## Known Alpha Limitations
-- Homebrew: source-build, not signed artifact (signing infra deferred)
-- Pairing: bridge.Verify after WaitForCandidate (V1 accepted, V2 noted)
+- Homebrew: source-build, not signed artifact (signing infra deferred in contract at 8680d36ca)
 
 ## Update Log
 | Date | Event |
@@ -41,9 +40,10 @@ handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → dev
 | 2026-07-24 | CONTRACT ACCEPTED at 609127e29 |
 | 2026-07-24 | Amendment 1 (QR mediation seam) |
 | 2026-07-24 | 9.4-A FROZEN at 4b55d33e8 (33 rounds) |
-| 2026-07-24 | 9.4-B ACCEPTED at d91ee9975 (36 rounds) |
+| 2026-07-24 | 9.4-B ACCEPTED (36 rounds); pairing order fix at f76042ed3 |
 | 2026-07-24 | 9.4-C ACCEPTED at 0afbbfac5 (3 rounds) |
 | 2026-07-24 | Homebrew ACCEPTED at dd5b7033c |
 | 2026-07-24 | 9.4-D ACCEPTED at 5632868c6 (44 rounds) |
 | 2026-07-24 | V1 Integrated ACCEPT at 5632868c6 |
-| 2026-07-24 | V2 in progress — pairing order + ledger + artifact signing |
+| 2026-07-24 | V1 pairing order fix ACCEPT at f76042ed3 |
+| 2026-07-24 | V2 + evidence sync near-final at 1a00c8c52 |
