@@ -23,8 +23,8 @@ var (
 )
 
 // QRPairSession is the non-authoritative metadata supplied to the cmd-layer
-// QR bridge. Device registration and proof verification remain PairingHost's
-// responsibility.
+// QR bridge. Device registration and device proof remain PairingHost's
+// responsibility; QR binding is verified at its candidate boundary.
 type QRPairSession struct {
 	SessionID      string
 	HostID         string
@@ -34,16 +34,16 @@ type QRPairSession struct {
 	BootstrapValue string
 }
 
-// PairingRequest is the mobile's Phase 1 candidate body. Legacy fields are
-// forwarded to PairingHost; QR metadata fields are verified by the bridge
-// BEFORE the candidate reaches PairingHost.
+// PairingRequest is the mobile's Phase 1 candidate body. Legacy fields and QR
+// metadata are forwarded to PairingHost, which invokes the injected bridge
+// verifier before processing the candidate proof.
 type PairingRequest struct {
 	PublicKeyDER   []byte `json:"publicKey"`
 	DisplayName    string `json:"displayName"`
 	PhoneNonce     []byte `json:"phoneNonce"`
 	BootstrapToken string `json:"bootstrapToken"`
-	// QR metadata — echoed by mobile from the QR code. Verified by bridge
-	// before PairingHost sees the candidate.
+// QR metadata — echoed by mobile from the QR code and verified by the bridge
+// at PairingHost's pre-proof candidate boundary.
 	QRHostID       string `json:"hostId,omitempty"`
 	QRDaemonBootID string `json:"daemonBootId,omitempty"`
 	QRChallengeID  string `json:"challengeId,omitempty"`
@@ -124,6 +124,7 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		Identity:        id,
 		Signer:          id, // HostIdentity implements HostSigner (Sign method)
 		Registry:        reg,
+		QRVerifier:      bridge,
 	})
 	if err != nil {
 		writeIPC(conn, map[string]string{"error": "pairing start failed: " + err.Error()})
@@ -167,7 +168,8 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		"challengeId":     metadata.ChallengeID,
 	})
 
-	// 2) Wait for candidate, then verify QR binding through the bridge.
+	// 2) Wait for candidate. PairingHost has already verified the QR binding
+	// before accepting the candidate and issuing any proof material.
 	cand, gotCand := ph.WaitForCandidate()
 	if !gotCand {
 		bridge.Cancel(sess.SessionID)
@@ -175,12 +177,6 @@ func handlePairSessionStart(conn net.Conn, durationSecs int) {
 		ph.Close()
 		return
 	}
-	if err := bridge.Verify(sess.SessionID, cand.QRHostID, cand.QRDaemonBootID, cand.QRChallengeID, cand.QRExpiresAt); err != nil {
-		writeIPC(conn, map[string]string{"error": "QR binding verification failed: " + err.Error()})
-		ph.Reject()
-		return
-	}
-
 	// 3) Notify CLI of candidate (fingerprint for display + hostNonce).
 	writeIPC(conn, map[string]interface{}{
 		"candidate": map[string]interface{}{

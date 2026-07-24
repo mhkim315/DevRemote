@@ -12,7 +12,7 @@ import (
 
 // qrPairBridge adds QR bootstrap metadata and a one-time gate around the
 // production pairing flow. It mediates between mobile (which sends QR
-// metadata in request body) and PairingHost (which sees only legacy fields).
+// metadata in the request body) and PairingHost's pre-proof verifier.
 // The bridge does not register devices or issue sessions; PairingHost and
 // DeviceRegistry remain those authorities.
 type qrPairBridge struct {

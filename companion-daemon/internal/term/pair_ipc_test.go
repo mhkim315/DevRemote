@@ -181,9 +181,9 @@ func TestQRPairBridgeMismatchConsumesChallenge(t *testing.T) {
 	}
 }
 
-// TestPairingIPC_QRMetadataMismatchRejected verifies the complete LAN and
-// PairingHost flow. The candidate reaches PairingHost, but the cmd-layer
-// bridge rejects its echoed QR binding before local approval or registration.
+// TestPairingIPC_QRMetadataMismatchRejected verifies the pre-proof boundary:
+// PairingHost rejects the candidate during phase 1, before challenge/proof
+// processing can reach the confirmation endpoint or local approval.
 func TestPairingIPC_QRMetadataMismatchRejected(t *testing.T) {
 	reg := deviceTrustReg(t)
 	id, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: t.TempDir() + "/id.json"})
@@ -218,7 +218,7 @@ func TestPairingIPC_QRMetadataMismatchRejected(t *testing.T) {
 		t.Fatalf("session decode: err=%v ok=%v", err, sess.OK)
 	}
 
-	priv, pubDER, _ := devicetrust.GenKeypair(t)
+	_, pubDER, _ := devicetrust.GenKeypair(t)
 	phoneNonce := make([]byte, 16)
 	phoneNonce[0] = 2
 	body, _ := json.Marshal(devicetrust.PairingRequest{
@@ -232,23 +232,11 @@ func TestPairingIPC_QRMetadataMismatchRejected(t *testing.T) {
 		QRExpiresAt:    sess.ExpiresAt,
 	})
 	resp, err := http.Post(sess.Endpoint, "application/json", bytes.NewReader(body))
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		if resp != nil {
 			resp.Body.Close()
 		}
-		t.Fatalf("phase1: err=%v status=%v", err, responseStatus(resp))
-	}
-	var chall devicetrust.ChallengeResponse
-	json.NewDecoder(resp.Body).Decode(&chall)
-	resp.Body.Close()
-	sig := devicetrust.SignTranscript(t, priv, phoneNonce, chall.HostNonce, chall.HostPublicDER, sess.SessionID)
-	confirm, _ := json.Marshal(devicetrust.Confirmation{PhoneSignature: sig})
-	resp, err = http.Post(sess.Endpoint+"/confirm", "application/json", bytes.NewReader(confirm))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		t.Fatalf("confirm: err=%v status=%v", err, responseStatus(resp))
+		t.Fatalf("phase1 pre-proof rejection: err=%v status=%v", err, responseStatus(resp))
 	}
 	resp.Body.Close()
 

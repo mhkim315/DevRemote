@@ -97,6 +97,17 @@ type PairingConfig struct {
 	Identity        IdentityProvider
 	Signer          HostSigner // mandatory: signs host proof for phone verification
 	Registry        *DeviceRegistry
+	// QRVerifier is an optional compatibility seam for direct legacy pairing
+	// callers. Production QR pairing injects it so the echoed QR binding is
+	// verified in handleCandidate, before any device proof or host proof work.
+	QRVerifier PairingQRVerifier
+}
+
+// PairingQRVerifier validates the four QR binding fields echoed by the phone.
+// It deliberately lives in devicetrust so PairingHost does not depend on the
+// cmd/term bridge package (which would create an import cycle).
+type PairingQRVerifier interface {
+	Verify(sessionID, hostID, daemonBootID, challengeID, expiresAt string) error
 }
 
 type IdentityProvider interface {
@@ -140,6 +151,7 @@ type PairingHost struct {
 	// Events: one-shot channels closed on transitions.
 	proofVerifiedCh chan struct{} // closed when phone key-possession is proven
 	doneCh          chan struct{} // closed when session completes
+	doneOnce        sync.Once
 	expiryTimer     *time.Timer
 }
 
@@ -245,6 +257,21 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
+	}
+	// QR binding is the pre-proof boundary. A mismatch consumes/fails the
+	// one-shot bridge challenge and terminates this pairing session before the
+	// candidate key is parsed, a host nonce is issued, or any proof is signed.
+	if verifier := ph.cfg.QRVerifier; verifier != nil {
+		if err := verifier.Verify(ph.Session.SessionID, req.QRHostID, req.QRDaemonBootID, req.QRChallengeID, req.QRExpiresAt); err != nil {
+			ph.mu.Lock()
+			if ph.state == pairStatePending {
+				ph.state = pairStateRejected
+			}
+			ph.mu.Unlock()
+			ph.signalDone()
+			http.Error(w, "QR binding verification failed", http.StatusUnauthorized)
+			return
+		}
 	}
 	if _, err := ParseP256PublicKey(req.PublicKeyDER); err != nil {
 		http.Error(w, "invalid public key", http.StatusBadRequest)
@@ -450,6 +477,10 @@ func (ph *PairingHost) WaitForCandidate() (Candidate, bool) {
 	}
 }
 
+func (ph *PairingHost) signalDone() {
+	ph.doneOnce.Do(func() { close(ph.doneCh) })
+}
+
 // Approve transitions to approved and registers the device. Must only be
 // called after state = proof_verified (or in test compat mode).
 func (ph *PairingHost) Approve() error {
@@ -497,7 +528,7 @@ func (ph *PairingHost) expire() {
 		ph.state = pairStateExpired
 	}
 	ph.mu.Unlock()
-	close(ph.doneCh)
+	ph.signalDone()
 	go ph.Close()
 }
 

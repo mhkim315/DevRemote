@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -64,6 +65,49 @@ func startTestPairing(t *testing.T, r *DeviceRegistry) *PairingHost {
 	}
 	t.Cleanup(func() { ph.Close() })
 	return ph
+}
+
+type rejectingQRVerifier struct{ calls int }
+
+func (v *rejectingQRVerifier) Verify(string, string, string, string, string) error {
+	v.calls++
+	return fmt.Errorf("QR mismatch")
+}
+
+func TestPairing_QRVerificationPreProof(t *testing.T) {
+	r, _ := newReg(t)
+	id := newTestId("qr-pre-proof")
+	verifier := &rejectingQRVerifier{}
+	ph, err := StartPairing(PairingConfig{
+		Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second,
+		Identity: id, Signer: id, Registry: r, QRVerifier: verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ph.Close()
+
+	body, _ := json.Marshal(PairingRequest{
+		PublicKeyDER: []byte("malformed-key"), BootstrapToken: ph.Session.BootstrapToken,
+		QRHostID: "host", QRDaemonBootID: "boot", QRChallengeID: "challenge", QRExpiresAt: ph.Session.ExpiresAt.Format(time.RFC3339),
+	})
+	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("phase1 status=%d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("QR verifier calls=%d, want 1", verifier.calls)
+	}
+	if _, ok := ph.WaitForCandidate(); ok {
+		t.Fatal("candidate reached proof/approval path after QR rejection")
+	}
+	if got := len(r.List()); got != 0 {
+		t.Fatalf("QR-rejected pairing registered %d devices", got)
+	}
 }
 
 func TestPairing_Full2PhaseAndApprove(t *testing.T) {
