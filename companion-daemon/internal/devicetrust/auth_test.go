@@ -2,6 +2,7 @@ package devicetrust
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -199,7 +200,6 @@ func TestEpoch_RevokeVsVerify(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
@@ -229,7 +229,6 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
@@ -255,7 +254,6 @@ func TestEpoch_ReplacementVsOldDevice(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	oldTok, _, _, _ := mgr.CreateAfterVerifiedChallenge(oldDev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), 0)
@@ -284,8 +282,7 @@ func TestEpoch_DaemonRestartBootChange(t *testing.T) {
 
 	bootID1, _ := NewBootID()
 	mgr1 := NewDeviceSessionManager(bootID1, 1*time.Hour)
-	mgr1.GetEpoch = reg.GetEpoch
-
+	mgr1.GetAuth = reg.GetAuth
 	tok, _, _, _ := mgr1.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID1, PermissionsForRole(RoleOwner), 0)
 	if p := mgr1.AuthenticateBearer(tok); p == nil {
 		t.Fatal("session valid under boot1")
@@ -294,8 +291,7 @@ func TestEpoch_DaemonRestartBootChange(t *testing.T) {
 	// Simulate daemon restart with different boot ID.
 	bootID2 := "different-boot-after-restart"
 	mgr2 := NewDeviceSessionManager(bootID2, 1*time.Hour)
-	mgr2.GetEpoch = reg.GetEpoch
-
+	mgr2.GetAuth = reg.GetAuth
 	// Boot change: session digest not in new manager's map → nil Principal.
 	if p := mgr2.AuthenticateBearer(tok); p != nil {
 		t.Fatal("restart boot change: old token accepted by new session manager")
@@ -310,7 +306,6 @@ func TestEpoch_PushRegistrationAfterRevoke(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	tok, _, _, _ := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch)
@@ -331,7 +326,6 @@ func TestEpoch_ConcurrentRevokeVsIssue(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
@@ -381,7 +375,6 @@ func TestEpoch_ConcurrentRevokeVsRefresh(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
@@ -439,7 +432,6 @@ func TestEpoch_LinearizationCreateAfterRevoke(t *testing.T) {
 
 	bootID, _ := NewBootID()
 	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
-	mgr.GetEpoch = reg.GetEpoch
 	mgr.GetAuth = reg.GetAuth
 
 	var wg sync.WaitGroup
@@ -487,4 +479,71 @@ func TestEpoch_LinearizationCreateAfterRevoke(t *testing.T) {
 		t.Fatal("create after revoke must be rejected by epoch CAS")
 	}
 	t.Logf("createErr=%v (expected)", createErr)
+}
+
+// ── 9.4-D R5: insert-recheck window test ──
+
+func TestEpoch_InsertRecheckWindow(t *testing.T) {
+	store := &FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, _ := NewDeviceRegistry(store)
+	_, pub, _ := GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	bootID, _ := NewBootID()
+	mgr := NewDeviceSessionManager(bootID, 1*time.Hour)
+
+	// Instrument GetAuth: the first call (pre-check) returns the real state.
+	// The second call (recheck, inside the lock after insert) signals
+	// goroutine B to revoke, waits for it, then returns the now-revoked state.
+	var callCount int32
+	revokeCh := make(chan struct{})
+	revokeDone := make(chan struct{})
+
+	mgr.GetAuth = func(deviceID string) AuthorizationState {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 2 {
+			// Recheck: signal B to revoke, then wait for it.
+			close(revokeCh)
+			<-revokeDone
+		}
+		return reg.GetAuth(deviceID)
+	}
+
+	var wg sync.WaitGroup
+	var createErr error
+
+	// Goroutine A: CreateAfterVerifiedChallenge.
+	// Pre-check passes (device active, epoch matches).
+	// Insert installs the session under the lock.
+	// Recheck calls GetAuth again — B has revoked by now → Active=false → ErrStale.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _, _, createErr = mgr.CreateAfterVerifiedChallenge(
+			dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), dev.Epoch,
+		)
+	}()
+
+	// Goroutine B: wait for the recheck barrier, then revoke.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-revokeCh
+		if err := reg.Revoke(dev.DeviceID); err != nil {
+			t.Errorf("revoke: %v", err)
+		}
+		close(revokeDone)
+	}()
+
+	wg.Wait()
+
+	if createErr == nil {
+		t.Fatal("insert-recheck window: create should have failed after revoke during insert")
+	}
+	if !errors.Is(createErr, ErrStale) {
+		t.Fatalf("insert-recheck window: error should wrap ErrStale, got: %v", createErr)
+	}
+	if mgr.Count() != 0 {
+		t.Fatalf("insert-recheck window: session leaked after rollback, count=%d", mgr.Count())
+	}
 }

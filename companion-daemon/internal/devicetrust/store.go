@@ -26,6 +26,12 @@ var (
 	// ErrDeviceNotFound / ErrDeviceRevoked: registry lookups.
 	ErrDeviceNotFound = errors.New("device not found")
 	ErrDeviceRevoked  = errors.New("device is revoked")
+	// ErrNoAuthority: no GetAuth callback is configured. Session issuance and
+	// authentication require an authority that provides Active+Epoch state.
+	ErrNoAuthority = errors.New("no authority configured")
+	// ErrStale: the authorization state changed between pre-check and commit
+	// (e.g. device was revoked while a session insert was in flight).
+	ErrStale = errors.New("stale authorization state")
 )
 
 // writeOwnerOnly writes data to path atomically (temp + rename) with 0600

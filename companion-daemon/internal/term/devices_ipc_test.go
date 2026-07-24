@@ -79,7 +79,7 @@ func TestDevicesIPC_RevokeEndToEnd(t *testing.T) {
 	dev, _ := reg.Add(pub, "phone")
 
 	bootID, _ := devicetrust.NewBootID()
-	mgr := devicetrust.NewDeviceSessionManager(bootID, time.Minute)
+	mgr := devicetrust.NewPermissiveSessionManager(bootID, time.Minute)
 	tickets := devicetrust.NewWSTicketStore()
 	connReg := devicetrust.NewAuthenticatedConnRegistry()
 	// Replicate the production onRevoke wiring (app.go `cb`).

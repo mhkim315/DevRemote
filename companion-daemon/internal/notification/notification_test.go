@@ -533,7 +533,7 @@ func TestFlagOffZeroEffect(t *testing.T) {
 	// RegisterHandlers with nil Writer still registers the push route.
 	mux := http.NewServeMux()
 	bootID, _ := devicetrust.NewBootID()
-	sessionMgr := devicetrust.NewDeviceSessionManager(bootID, 1*time.Hour)
+	sessionMgr := devicetrust.NewPermissiveSessionManager(bootID, 1*time.Hour)
 	RegisterHandlers(mux, NotificationHandlerConfig{
 		Writer:   nil,
 		Resolver: nil,

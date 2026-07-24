@@ -14,7 +14,7 @@ func TestCockpitHandlerReturnsEmptyJSON(t *testing.T) {
 	s := NewCockpitStore()
 	s.AppendSession(Item{Kind: "runtime", State: "idle", Summary: "session", Origin: Origin{Provider: "codex", SessionID: "codex:1", RuntimeID: "runtime", Generation: "2"}})
 	m := http.NewServeMux()
-	sessions := devicetrust.NewDeviceSessionManager("boot", time.Minute)
+	sessions := devicetrust.NewPermissiveSessionManager("boot", time.Minute)
 	RegisterCockpitHandler(m, s, sessions)
 	rr := httptest.NewRecorder()
 	m.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/cockpit", nil))

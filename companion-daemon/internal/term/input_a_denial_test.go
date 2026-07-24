@@ -47,7 +47,7 @@ func TestInputA_SessionCapabilitiesArePrincipalAuthorized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions := devicetrust.NewDeviceSessionManager("input-a-caps", time.Minute)
+	sessions := devicetrust.NewPermissiveSessionManager("input-a-caps", time.Minute)
 	ownerToken, _, _, err := sessions.CreateAfterVerifiedChallenge("owner", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead, devicetrust.PermTerminalInput}, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions := devicetrust.NewDeviceSessionManager("input-a-boot", time.Minute)
+	sessions := devicetrust.NewPermissiveSessionManager("input-a-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge("device-readonly", identity.HostID, sessions.BootID(), []string{devicetrust.PermSessionsRead}, 0)
 	if err != nil {
 		t.Fatal(err)

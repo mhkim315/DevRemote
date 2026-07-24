@@ -106,8 +106,7 @@ type DeviceSessionManager struct {
 	lifetime      time.Duration
 	onReplace     OnReplaceFunc                            // called when a device session is replaced
 	onRevoke      OnReplaceFunc                            // called when a device is revoked
-	GetEpoch      func(deviceID string) int64              // 9.4-D: epoch lookup in DeviceRegistry
-	GetAuth       func(deviceID string) AuthorizationState // 9.4-D: authoritative state
+	GetAuth       func(deviceID string) AuthorizationState // 9.4-D: authoritative state (Active+Epoch)
 	maxSessions   int
 	purgeStop     chan struct{}
 	purgeDone     chan struct{}
@@ -247,21 +246,17 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	if bootID != m.bootID {
 		return "", "", time.Time{}, fmt.Errorf("boot ID mismatch")
 	}
-	// 9.4-D: authoritative auth check. Prefer GetAuth (Active+Epoch).
+	// 9.4-D: authoritative auth check. GetAuth provides Active+Epoch.
 	// Nil authority → fail closed; no silent skip.
-	if m.GetAuth != nil {
-		auth := m.GetAuth(deviceID)
-		if !auth.Active {
-			return "", "", time.Time{}, fmt.Errorf("device is not active")
-		}
-		if auth.Epoch != uint64(expectedEpoch) {
-			return "", "", time.Time{}, fmt.Errorf("auth epoch mismatch: expected %d, current %d", expectedEpoch, auth.Epoch)
-		}
-	} else if m.GetEpoch != nil {
-		currentEpoch := m.GetEpoch(deviceID)
-		if currentEpoch != expectedEpoch {
-			return "", "", time.Time{}, fmt.Errorf("epoch changed: expected %d, current %d", expectedEpoch, currentEpoch)
-		}
+	if m.GetAuth == nil {
+		return "", "", time.Time{}, ErrNoAuthority
+	}
+	auth := m.GetAuth(deviceID)
+	if !auth.Active {
+		return "", "", time.Time{}, fmt.Errorf("device is not active")
+	}
+	if auth.Epoch != uint64(expectedEpoch) {
+		return "", "", time.Time{}, fmt.Errorf("auth epoch mismatch: expected %d, current %d", expectedEpoch, auth.Epoch)
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, tokenBytes); err != nil {
@@ -312,16 +307,14 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
-	if m.GetAuth != nil {
-		auth2 := m.GetAuth(deviceID)
-		if !auth2.Active || auth2.Epoch != uint64(expectedEpoch) {
-			delete(m.sessions, digest)
-			delete(m.byDevice, deviceID)
-			cb := m.onRevoke
-			m.mu.Unlock()
-			notifyInvalidated(cb, expiredDeviceIDs)
-			return "", "", time.Time{}, fmt.Errorf("auth state changed during insert")
-		}
+	auth2 := m.GetAuth(deviceID)
+	if !auth2.Active || auth2.Epoch != uint64(expectedEpoch) {
+		delete(m.sessions, digest)
+		delete(m.byDevice, deviceID)
+		cb := m.onRevoke
+		m.mu.Unlock()
+		notifyInvalidated(cb, expiredDeviceIDs)
+		return "", "", time.Time{}, fmt.Errorf("%w: auth state changed during insert", ErrStale)
 	}
 	replaceCB := m.onReplace
 	invalidateCB := m.onRevoke
@@ -363,20 +356,16 @@ func (m *DeviceSessionManager) AuthenticateBearer(rawToken string) *Principal {
 		notifyInvalidated(cb, []string{deviceID})
 		return nil
 	}
-	// 9.4-D: authoritative auth check. Prefer GetAuth (Active+Epoch).
+	// 9.4-D: authoritative auth check. GetAuth provides Active+Epoch.
 	// Nil authority → fail closed.
-	if m.GetAuth != nil {
-		auth := m.GetAuth(sess.DeviceID)
-		if !auth.Active || auth.Epoch != uint64(sess.DeviceEpoch) {
-			m.mu.Unlock()
-			return nil
-		}
-	} else if m.GetEpoch != nil {
-		currentEpoch := m.GetEpoch(sess.DeviceID)
-		if currentEpoch != sess.DeviceEpoch {
-			m.mu.Unlock()
-			return nil
-		}
+	if m.GetAuth == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	auth := m.GetAuth(sess.DeviceID)
+	if !auth.Active || auth.Epoch != uint64(sess.DeviceEpoch) {
+		m.mu.Unlock()
+		return nil
 	}
 	p := &Principal{
 		DeviceID:        sess.DeviceID,

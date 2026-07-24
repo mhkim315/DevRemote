@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"time"
 )
 
 // GenKeypair generates an ephemeral P-256 keypair for tests.
@@ -22,4 +23,15 @@ func SignTranscript(t interface{ Fatal(...interface{}) }, priv *ecdsa.PrivateKey
 	digest := sha256.Sum256(data)
 	sig, _ := ecdsa.SignASN1(rand.Reader, priv, digest[:])
 	return sig
+}
+
+// NewPermissiveSessionManager creates a DeviceSessionManager with a GetAuth that
+// accepts any device at epoch 0. For tests that need session CRUD without real
+// device authorization.
+func NewPermissiveSessionManager(bootID string, lifetime time.Duration) *DeviceSessionManager {
+	m := NewDeviceSessionManager(bootID, lifetime)
+	m.GetAuth = func(deviceID string) AuthorizationState {
+		return AuthorizationState{Epoch: 0, Active: true}
+	}
+	return m
 }

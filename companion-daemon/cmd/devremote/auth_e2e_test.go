@@ -71,6 +71,7 @@ func TestAuthProductionPath_ChallengeAndVerify(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	if app.authHandler != nil {
 		app.authHandler.Identity = id
 		app.authHandler.Registry = reg
@@ -140,6 +141,7 @@ func TestRemoteMode_MemberCannotCreate(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	if app.authHandler != nil {
 		app.authHandler.Identity = id
 		app.authHandler.Registry = reg
@@ -202,6 +204,7 @@ func TestPA2a_LinkRoutesRemoved_DeviceAuth(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	if app.authHandler != nil {
 		app.authHandler.Identity = id
 		app.authHandler.Registry = reg
@@ -238,6 +241,7 @@ func TestRemoteRouteMatrix(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	app.handlers.HostIdentity = id
 	if app.authHandler != nil {
 		app.authHandler.Identity = id
@@ -384,6 +388,7 @@ func TestRemoteWSTicketUpgradeAndBearerExpiry(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	app.handlers.HostIdentity = id
 	app.authHandler.Identity = id
 	app.authHandler.Registry = reg
@@ -474,6 +479,7 @@ func TestRemoteWSTicketCapacityThroughProductionHandler(t *testing.T) {
 	}
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	app.handlers.HostIdentity = id
 	app.authHandler.Identity = id
 	app.authHandler.Registry = reg
@@ -520,6 +526,9 @@ func TestRemoteWSTicketFailsClosedWithoutHostIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
+	app.sessionMgr.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
+		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
+	}
 	p, _ := func() (*devicetrust.Principal, string) {
 		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(
 			"device", "host", app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
@@ -562,6 +571,9 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, testDeps())
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
+	}
+	app.sessionMgr.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
+		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
 	}
 	issueGrant := func() (*devicetrust.Principal, string) {
 		raw, _, _, createErr := app.sessionMgr.CreateAfterVerifiedChallenge(

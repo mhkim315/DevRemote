@@ -208,7 +208,7 @@ func itoa64(n int64) string {
 func TestHandleTranscript_Auth_MissingToken(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	h := devicetrust.RequirePrincipal(
-		devicetrust.NewDeviceSessionManager("b", 20*time.Minute),
+		devicetrust.NewPermissiveSessionManager("b", 20*time.Minute),
 		HandleTranscript(svc),
 		devicetrust.PermSessionsRead,
 	)
@@ -223,7 +223,7 @@ func TestHandleTranscript_Auth_MissingToken(t *testing.T) {
 func TestHandleTranscript_Auth_InvalidToken(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
 	h := devicetrust.RequirePrincipal(
-		devicetrust.NewDeviceSessionManager("b", 20*time.Minute),
+		devicetrust.NewPermissiveSessionManager("b", 20*time.Minute),
 		HandleTranscript(svc),
 		devicetrust.PermSessionsRead,
 	)
@@ -238,7 +238,7 @@ func TestHandleTranscript_Auth_InvalidToken(t *testing.T) {
 
 func TestHandleTranscript_Auth_ValidToken(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
-	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
+	m := devicetrust.NewPermissiveSessionManager("b", 20*time.Minute)
 	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", devicetrust.PermissionsForRole(devicetrust.RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -256,7 +256,7 @@ func TestHandleTranscript_Auth_ValidToken(t *testing.T) {
 
 func TestHandleTranscript_Auth_WrongPermission(t *testing.T) {
 	svc := NewService(DefaultStoreConfig())
-	m := devicetrust.NewDeviceSessionManager("b", 20*time.Minute)
+	m := devicetrust.NewPermissiveSessionManager("b", 20*time.Minute)
 	raw, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", devicetrust.PermissionsForRole(devicetrust.RoleMember), 0)
 	if err != nil {
 		t.Fatalf("create session: %v", err)

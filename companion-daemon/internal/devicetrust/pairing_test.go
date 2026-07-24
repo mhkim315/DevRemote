@@ -808,7 +808,7 @@ func main() {
 		fail("host identity: %v", err)
 	}
 
-	sessions := devicetrust.NewDeviceSessionManager("pb-dg-r4-boot", time.Minute)
+	sessions := devicetrust.NewPermissiveSessionManager("pb-dg-r4-boot", time.Minute)
 	bearer, _, _, err := sessions.CreateAfterVerifiedChallenge(deviceID, identity.HostID, sessions.BootID(), permissions, 0)
 	if err != nil {
 		fail("create paired device session: %v", err)

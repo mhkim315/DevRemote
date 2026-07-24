@@ -27,7 +27,7 @@ func setupAuthHandler(t *testing.T) (*AuthHandler, *ecdsa.PrivateKey, string) {
 	return &AuthHandler{
 		Identity: id, Registry: reg,
 		Challenges:  NewChallengeStore(),
-		Sessions:    NewDeviceSessionManager(bootID, 20*time.Minute),
+		Sessions:    NewPermissiveSessionManager(bootID, 20*time.Minute),
 		RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000}),
 	}, devPriv, d.DeviceID
 }
@@ -331,6 +331,7 @@ func TestSessionCap_ReplacementInvalidatesOld(t *testing.T) {
 func TestSessionCap_GlobalCapBlocksNewDevice(t *testing.T) {
 	// Create a fresh session manager with a very small cap.
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 20 * time.Minute, MaxSessions: 1})
+	m.GetAuth = func(deviceID string) AuthorizationState { return AuthorizationState{Epoch: 0, Active: true} }
 	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("first: %v", err)
@@ -345,6 +346,7 @@ func TestSessionCap_GlobalCapBlocksNewDevice(t *testing.T) {
 
 func TestSessionCap_ReplacementAllowedAtCap(t *testing.T) {
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 20 * time.Minute, MaxSessions: 1})
+	m.GetAuth = func(deviceID string) AuthorizationState { return AuthorizationState{Epoch: 0, Active: true} }
 	_, _, _, err := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	if err != nil {
 		t.Fatalf("first: %v", err)
@@ -362,6 +364,7 @@ func TestSessionCap_ReplacementAllowedAtCap(t *testing.T) {
 
 func TestSessionCap_SlotFreedAfterExpiry(t *testing.T) {
 	m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{BootID: "b", Lifetime: 1 * time.Millisecond, MaxSessions: 1})
+	m.GetAuth = func(deviceID string) AuthorizationState { return AuthorizationState{Epoch: 0, Active: true} }
 	tok, _, _, _ := m.CreateAfterVerifiedChallenge("d1", "h", "b", PermissionsForRole(RoleOwner), 0)
 	time.Sleep(10 * time.Millisecond)
 	if m.AuthenticateBearer(tok) != nil {
@@ -478,7 +481,7 @@ func setupAuthHandlerForMember(t *testing.T) (*AuthHandler, *ecdsa.PrivateKey, s
 		t.Fatalf("expected member role, got %s", d.Role)
 	}
 	bootID, _ := NewBootID()
-	return &AuthHandler{Identity: id, Registry: reg, Challenges: NewChallengeStore(), Sessions: NewDeviceSessionManager(bootID, 20*time.Minute), RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000})}, devPriv, d.DeviceID
+	return &AuthHandler{Identity: id, Registry: reg, Challenges: NewChallengeStore(), Sessions: NewPermissiveSessionManager(bootID, 20*time.Minute), RateLimiter: NewChallengeRateLimiter(RateLimiterConfig{Burst: 100, RatePerMin: 1000})}, devPriv, d.DeviceID
 }
 
 func TestRateLimiter_HandleChallengeIntegration(t *testing.T) {

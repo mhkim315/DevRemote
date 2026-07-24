@@ -165,6 +165,7 @@ func newRemoteFixtureInDir(t *testing.T, dir string, mutate func(*Config, *Depen
 	// Production late-wiring performed by App.Run(); replicate it exactly.
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	app.handlers.HostIdentity = id
 	app.authHandler.Identity = id
 	app.authHandler.Registry = reg

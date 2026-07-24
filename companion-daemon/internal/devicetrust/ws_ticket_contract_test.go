@@ -26,7 +26,7 @@ func newTicketPrincipal(t *testing.T, m *DeviceSessionManager, deviceID, hostID 
 }
 
 func TestWSTicket_ExactExpiryAndDefensivePermissions(t *testing.T) {
-	m := NewDeviceSessionManager("boot", time.Minute)
+	m := NewPermissiveSessionManager("boot", time.Minute)
 	p, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	p.BearerExpires = time.Now().UTC().Add(20 * time.Millisecond)
 	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 3, MaxTotal: 3})
@@ -86,7 +86,7 @@ func TestHandleWSTicket_ReturnsStoredEffectiveExpiry(t *testing.T) {
 }
 
 func TestWSTicket_WrongBindingConsumesTicket(t *testing.T) {
-	m := NewDeviceSessionManager("boot", time.Minute)
+	m := NewPermissiveSessionManager("boot", time.Minute)
 	p, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	s := NewWSTicketStore()
 	raw, _, err := s.Issue(p, "host", "session")
@@ -102,7 +102,7 @@ func TestWSTicket_WrongBindingConsumesTicket(t *testing.T) {
 }
 
 func TestWSTicket_BearerReplacementAndRevokeInvalidate(t *testing.T) {
-	m := NewDeviceSessionManager("boot", time.Minute)
+	m := NewPermissiveSessionManager("boot", time.Minute)
 	s := NewWSTicketStore()
 	p1, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	raw1, _, _ := s.Issue(p1, "host", "session")
@@ -216,6 +216,7 @@ func TestDeviceSessionExpiry_AllRemovalPathsNotify(t *testing.T) {
 			m := NewDeviceSessionManagerWithConfig(DeviceSessionManagerConfig{
 				BootID: "boot", Lifetime: time.Millisecond, MaxSessions: 2,
 			})
+			m.GetAuth = func(deviceID string) AuthorizationState { return AuthorizationState{Epoch: 0, Active: true} }
 			var mu sync.Mutex
 			var invalidated []string
 			m.SetOnRevoke(func(deviceID string) {

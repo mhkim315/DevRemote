@@ -38,7 +38,7 @@ func TestDevicesCLI_ListedIDRevokesUnchanged(t *testing.T) {
 		t.Fatalf("add device: %v", err)
 	}
 	bootID, _ := devicetrust.NewBootID()
-	mgr := devicetrust.NewDeviceSessionManager(bootID, time.Minute)
+	mgr := devicetrust.NewPermissiveSessionManager(bootID, time.Minute)
 	term.SetPairingContext(nil, reg)
 	term.SetDeviceAdminContext(mgr, devicetrust.NopAuditLog{})
 

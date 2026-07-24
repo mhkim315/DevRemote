@@ -84,6 +84,7 @@ func newRemoteFixtureWith(t *testing.T, ticketCfg *devicetrust.WSTicketStoreConf
 	// Production late-wiring performed by App.Run(); replicate it exactly.
 	app.hostIdentity = id
 	app.deviceRegistry = reg
+	app.sessionMgr.GetAuth = reg.GetAuth
 	app.handlers.HostIdentity = id
 	app.authHandler.Identity = id
 	app.authHandler.Registry = reg
