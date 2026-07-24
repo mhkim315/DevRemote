@@ -107,6 +107,7 @@ export default function ConnectScreen({ onPaired, localTest }: {
     <View style={styles.container}>
       <Text style={styles.title}>Welcome to POKIT</Text>
       <Text style={styles.subtitle}>Scan the QR code in your terminal to connect instantly.</Text>
+      <Text style={styles.subText}>Make sure this phone and your Mac are on the same WiFi network.</Text>
 
       <View style={styles.cameraContainer}>
         <CameraView

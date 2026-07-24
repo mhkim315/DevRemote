@@ -241,7 +241,13 @@ func attachManagedSession(sessionID string) {
 		log.Fatalf("attach write: %v", err)
 	}
 
-	fmt.Println("Attached to managed Codex session. Type a prompt and press Enter; Ctrl-D detaches (session keeps running).")
+	label := "managed"
+	if strings.Contains(sessionID, "claude_headless:") {
+		label = "Claude"
+	} else if strings.Contains(sessionID, "codex_app_server:") {
+		label = "Codex"
+	}
+	fmt.Printf("Attached to managed %s session. Type a prompt and press Enter; Ctrl-D detaches (session keeps running).\n", label)
 
 	// Daemon → stdout: projected bounded events.
 	done := make(chan struct{})
