@@ -239,6 +239,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		return nil, fmt.Errorf("device mutation authorizer unavailable")
 	}
 	mutationTarget := devicetrust.MutationAuthorizer(deviceRegistry)
+	if cfg.InsecureLocalOnly {
+		// Local mode has an explicit, configuration-scoped authority. It is
+		// safe only because the HTTP listener is loopback-only and the IPC
+		// socket is chmod 0600; it is never a missing-authorizer fallback.
+		mutationTarget = devicetrust.NewInsecureLocalOnlyMutationAuthorizer()
+	}
 	if deps.mutationAuthorizer != nil {
 		mutationTarget = deps.mutationAuthorizer
 	}
@@ -1073,7 +1079,7 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.telemetry, a.lifecycle)
 	}
-	return term.StartIPCServer(a.ipcPath, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
+	return term.StartIPCServer(a.ipcPath, a.mutationAuthorizer, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

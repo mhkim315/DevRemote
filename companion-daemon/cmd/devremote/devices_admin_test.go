@@ -36,7 +36,7 @@ func TestProofDeviceRevokeViaLocalIPCClosesLiveWS(t *testing.T) {
 
 	sockPath := "/tmp/pokit-m255-ipc-test.sock"
 	_ = os.Remove(sockPath)
-	ipc, err := term.StartIPCServer(sockPath, nil, f.app.lifecycle, nil, nil)
+	ipc, err := term.StartIPCServer(sockPath, testMutationAuthorizer{}, nil, f.app.lifecycle, nil, nil)
 	if err != nil {
 		t.Fatalf("start IPC: %v", err)
 	}

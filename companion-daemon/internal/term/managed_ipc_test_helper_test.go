@@ -12,7 +12,7 @@ import (
 func ipcRoundTripWith(t *testing.T, managed *ManagedCodexService, body map[string]any) map[string]string {
 	t.Helper()
 	client, server := net.Pipe()
-	go handleIPCConnection(server, nil, nil, managed, nil)
+	go handleIPCConnection(server, testMutationAuthorizer{}, nil, nil, managed, nil)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)

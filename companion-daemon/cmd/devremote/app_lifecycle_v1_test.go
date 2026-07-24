@@ -346,7 +346,7 @@ func TestAppV1_ShutdownRebindsIPCOnRepeatedFreshCycles(t *testing.T) {
 			t.Fatal(err)
 		}
 		app.ipcPath = path
-		ipc, err := term.StartIPCServer(path, nil, nil, nil, nil)
+		ipc, err := term.StartIPCServer(path, testMutationAuthorizer{}, nil, nil, nil, nil)
 		if err != nil {
 			t.Fatalf("cycle %d start IPC: %v", cycle, err)
 		}

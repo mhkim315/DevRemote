@@ -56,7 +56,7 @@ func TestC1D_LiveProductionProof(t *testing.T) {
 	}
 	defer os.RemoveAll(cwd)
 
-	ipc, err := term.StartIPCServer(sock, nil, nil, nil, svc)
+	ipc, err := term.StartIPCServer(sock, testMutationAuthorizer{}, nil, nil, nil, svc)
 	if err != nil {
 		t.Fatalf("StartIPCServer: %v", err)
 	}

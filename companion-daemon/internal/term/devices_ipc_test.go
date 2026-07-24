@@ -17,7 +17,7 @@ func driveIPCJSON(t *testing.T, req map[string]interface{}) map[string]json.RawM
 	t.Helper()
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go handleIPCConnection(serverConn, nil, nil, nil, nil)
+	go handleIPCConnection(serverConn, testMutationAuthorizer{}, nil, nil, nil, nil)
 
 	b, _ := json.Marshal(req)
 	writeErr := make(chan error, 1)

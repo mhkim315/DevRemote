@@ -44,7 +44,7 @@ func TestDevicesCLI_ListedIDRevokesUnchanged(t *testing.T) {
 
 	sock := "/tmp/pokit-m255-cli-test.sock"
 	_ = os.Remove(sock)
-	ipc, err := term.StartIPCServer(sock, nil, nil, nil, nil)
+	ipc, err := term.StartIPCServer(sock, testMutationAuthorizer{}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("start IPC: %v", err)
 	}
