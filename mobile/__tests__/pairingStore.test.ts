@@ -20,7 +20,10 @@ const HOST_KEY = toBase64(CANONICAL_SPKI);
 describe('pairingStore', () => {
   const AsyncStorage = require('@react-native-async-storage/async-storage');
 
-  beforeEach(() => AsyncStorage.__reset());
+  beforeEach(() => {
+    AsyncStorage.__reset();
+    if (AsyncStorage.default) AsyncStorage.default.__reset();
+  });
 
   it('save + load round-trip', async () => {
     await savePairing({ hostId: 'h', hostPubKeyB64: HOST_KEY, deviceId: 'd', baseURL: 'http://x', pairedAt: '2026', role: 'owner' });

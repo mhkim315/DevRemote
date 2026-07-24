@@ -17,5 +17,9 @@ module.exports = {
     // deviceIdentity (reached transitively via pairingClient) imports SecureStore.
     // A stateless default; deviceKey.test.ts overrides with a stateful jest.mock.
     '^expo-secure-store$': '<rootDir>/__tests__/__mocks__/expo-secure-store.js',
+    // DS-STAB5: @react-native-async-storage/async-storage v2.x resolves to a TS
+    // entry that leaks window (browser-only). A fixed global mock removes the
+    // order-dependence between pairingStore.test.ts and m3aAuthIOSIntegration.test.ts.
+    '^@react-native-async-storage/async-storage$': '<rootDir>/__tests__/__mocks__/async-storage.js',
   },
 };
