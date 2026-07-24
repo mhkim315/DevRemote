@@ -17,15 +17,15 @@ The build entrypoint must validate each component. Any mismatch fails closed.
 | macOS | 26.x (arm64) | `sw_vers -productVersion`, `uname -m` | `[[ "$(uname -m)" == "arm64" && "$(sw_vers -productVersion)" == 26.* ]]` |
 | Go | 1.26.x | `go version` | `go version \| grep -q "go1.26"` |
 | Node | **20.19.4** (exact; RN 0.85.3 floor is ^20.19.4) | `mobile/.nvmrc` (R1), `mobile/package.json` `engines` (R1) | `node --version` = `v20.19.4` |
-| npm | 10.x (lockfileVersion 3) | `mobile/package.json` `engines` (R1) | `npm --version` starts with `10.` |
+| npm | **10.8.2** (exact; lockfileVersion 3 floor) | `mobile/package.json` `packageManager` (R1, Corepack) | `npm --version` = `10.8.2` |
 | npm/Corepack | Corepack-managed npm preferred | `corepack enable` (R1) | `npm --version` |
-| JDK | **21 (Eclipse Temurin / Adoptium)** | Gradle toolchain spec (R1) | `java -version 2>&1 \| grep -E "Temurin\|Adoptium" \| grep "21."` |
-| Android SDK | 36 (build-tools 36.x) | `mobile/android/build.gradle` `compileSdk` / `buildToolsVersion` | `sdkmanager --list 2>/dev/null \| grep "build-tools;36"` |
+| JDK | **21 (Eclipse Temurin / Adoptium)** | Gradle toolchain spec (R1) | `java.vendor` contains `Temurin` or `Adoptium`; `java.version` starts with `21.` (via `java -XshowSettings:properties -version 2>&1`) |
+| Android SDK | 36 (build-tools 36.x) | `mobile/android/build.gradle` `compileSdk` (`rootProject.ext.compileSdkVersion`) / `buildToolsVersion` (`rootProject.ext.buildToolsVersion`) | Installed packages: `platforms;android-36` + `build-tools;36.x` present. `compileSdk`/`buildTools` values validated against rootProject.ext |
 | Expo CLI | ~56.0.0 | `mobile/package.json` | `npx expo --version` |
 | React Native | 0.85.3 | `mobile/package.json` | lockfile |
 | AGP | 8.12.0 | Expo SDK 56 managed; verified in generated `build.gradle` classpath | grep generated `build.gradle` |
 | Gradle | **8.13** (AGP 8.12.0 minimum) | `mobile/android/gradle/wrapper/gradle-wrapper.properties` (R1) | wrapper checksum |
-| foojay-resolver | **removed** | `mobile/android/settings.gradle` (R1) | grep absent |
+| foojay-resolver | **removed** (Gradle 8.13 compatible, but decouples RN plugin from JDK vendor detection) | `@react-native/gradle-plugin/settings.gradle.kts` (in `node_modules`; R1 resolution must NOT edit `node_modules` directly) | Not present in effective settings after R1 resolution |
 
 ### 1.1 Gradle version decision (R0 freezes this choice)
 
@@ -155,9 +155,9 @@ R1 may modify only:
 | `mobile/.nvmrc` | Create | Node 20.19.4 pin |
 | `mobile/package.json` | Modify | `engines` field |
 | `mobile/plugins/*` | Create | Expo config plugin for manifest |
-| `mobile/android/settings.gradle` | Modify (tracked overlay) | Remove foojay-resolver |
-| `mobile/android/gradle/wrapper/gradle-wrapper.properties` | Modify (tracked overlay) | Gradle 8.13 |
-| `mobile/android/build.gradle` | Modify (tracked overlay) | JDK toolchain (if needed) |
+| `mobile/app.json` | Modify | `expo-build-properties` / config plugin declaration |
+| `mobile/app.json` | Modify (same row as above) | Gradle version via `expo-build-properties` |
+
 | `scripts/build-artifacts.sh` | Create | Build entrypoint |
 | `docs/STEP9_5_R1_*.md` | Create | R1 evidence |
 
