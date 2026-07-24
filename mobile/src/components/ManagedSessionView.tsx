@@ -13,9 +13,15 @@ import {
 } from '../lib/managedSession';
 
 interface Props {
-  session: string; // canonical codex_app_server:<local> id
+  session: string; // canonical codex_app_server:<local> or claude_headless:<local> id
   token?: string;
   onBack: () => void;
+}
+
+function adapterLabel(session: string): string {
+  if (session.startsWith('claude_headless:')) return 'Claude';
+  if (session.startsWith('codex_app_server:')) return 'Codex';
+  return 'Managed';
 }
 
 const POLL_MS = 1500;
@@ -81,7 +87,7 @@ export default function ManagedSessionView({ session, token, onBack }: Props) {
     <SafeAreaView style={styles.root}>
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack}><Text style={styles.back}>‹ Back</Text></TouchableOpacity>
-        <Text style={styles.title}>Native Managed Session · Codex</Text>
+        <Text style={styles.title}>Native Managed Session · {adapterLabel(session)}</Text>
         <Text style={statusCurrent ? styles.status : styles.statusStale}>
           {statusCurrent ? status : `${status === 'unavailable' ? 'unavailable' : status} (stale)`}
         </Text>

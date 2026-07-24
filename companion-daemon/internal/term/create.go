@@ -40,8 +40,8 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 	if adapter == "" {
 		adapter = "controlled_pty"
 	}
-	if adapter != "controlled_pty" {
-		http.Error(w, "only controlled_pty sessions can be created via profile", http.StatusBadRequest)
+	if adapter != "controlled_pty" && adapter != claudeHeadlessAdapter && adapter != codexAppServerAdapter {
+		http.Error(w, "only controlled_pty, claude_headless, or codex_app_server sessions can be created via profile", http.StatusBadRequest)
 		return
 	}
 	if req.ProfileID == "custom" {
