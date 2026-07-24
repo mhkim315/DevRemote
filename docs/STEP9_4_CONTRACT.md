@@ -48,8 +48,10 @@ pokit daemon install
 pokit daemon start
 ```
 
-The formula installs the signed/versioned `pokit` CLI and daemon artifact. The
-CLI is the only public bootstrap interface; it owns path discovery, version
+The formula installs the signed/versioned `pokit` CLI and daemon artifact.
+**Alpha note:** code signing infrastructure is deferred; Base Alpha uses
+source-built artifacts with SHA-256 verification. The CLI is the only public
+bootstrap interface; it owns path discovery, version
 reporting, and delegation to the daemon service manager. No installer may ask
 for, create, or transmit an account credential.
 
