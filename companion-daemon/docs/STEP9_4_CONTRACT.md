@@ -26,6 +26,15 @@ authority, approval authority, runtime lifecycle authority, and `Recorder`.
 Implementation may import existing production-live code only; it must not copy
 or fork trust logic into a new registry or protocol.
 
+**Amendment 1 (9.4-B QR mediation):** internal/devicetrust PairingRequest may
+add optional QR metadata fields (host ID, daemon boot ID, challenge ID,
+expires-at). These fields are verified by the QR bridge before the existing
+pairing protocol proceeds. PairingHost must reject a candidate whose QR
+metadata does not match the bridge stored binding. This is a narrow mediation
+seam; it does not authorize a second pairing authority, alternate device
+registration, or weakening of ChallengeStore/DeviceSessionManager/
+DeviceRegistry/HostIdentity ownership.
+
 ## 2. 9.4-A — macOS installation and bootstrap
 
 ### 2.1 Distribution path
@@ -39,8 +48,10 @@ pokit daemon install
 pokit daemon start
 ```
 
-The formula installs the signed/versioned `pokit` CLI and daemon artifact. The
-CLI is the only public bootstrap interface; it owns path discovery, version
+The formula installs the signed/versioned `pokit` CLI and daemon artifact.
+**Alpha note:** code signing infrastructure is deferred; Base Alpha uses
+source-built artifacts with SHA-256 verification. The CLI is the only public
+bootstrap interface; it owns path discovery, version
 reporting, and delegation to the daemon service manager. No installer may ask
 for, create, or transmit an account credential.
 

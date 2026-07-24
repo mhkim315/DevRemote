@@ -1,21 +1,26 @@
 # Step 9.4 — Secure Accountless Onboarding Ledger
 
-**Status:** INTEGRATED — V1_ACCEPT at `5632868c6`
+**Status:** V1_ACCEPT + V2 residuals closed at `8680d36ca`
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
-**Completed:** 2026-07-24
+**Last update:** V2 near-final
 
 ## Key Identities
 
 | Packet | Status | Final SHA | Rounds |
 |--------|--------|-----------|--------|
-| CONTRACT | ACCEPTED | `609127e29` (+ Amendment 1) | 1 |
+| CONTRACT | ACCEPTED | `609127e29` (+ Amendment 1, alpha signing deferral at `8680d36ca`) | 1 |
 | 9.4-A Daemon Bootstrap | FROZEN | `4b55d33e8` | 33 |
-| 9.4-B QR Pairing | ACCEPTED | `d91ee9975` | 36 |
+| 9.4-B QR Pairing | ACCEPTED | `f76042ed3` (BootstrapToken-gated pre-proof Verify) | 36 |
 | 9.4-C Android Keys | ACCEPTED | `0afbbfac5` | 3 |
 | 9.4-A Homebrew | ACCEPTED | `dd5b7033c` | 1 |
 | 9.4-D Revoke/Recovery | ACCEPTED | `5632868c6` | 44 |
-| INTEGRATED | V1_ACCEPT | `5632868c6` | — |
+| Integrated V1 | ACCEPTED | `5632868c6` | — |
+| Pairing order fix | V1_ACCEPT | `f76042ed3` | 2 (T2) |
+| Contract + ledger sync | Pending V2 | `8680d36ca` | — |
+
+### Pairing verification order (corrected)
+handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → device proof → host proof. Mismatch fails closed before challenged state.
 
 ## Total: 118 rounds, 73 V1 REJECTs
 
