@@ -7,8 +7,9 @@ closeout at `62a50f0a8`. Step 9.1 Operational Timeline staging received
 independent ACCEPT at `dc376f9b7`. Step 9.2 Transcript/Activity projection
 convergence received independent ACCEPT at `c82fef47f`. Step 9.3 N1
 exact-event notification-to-action received independent ACCEPT at
-`f7033b86c`. Step 9.4 remains not started — a separate, reviewed
-implementation contract is required before Step 9.4 may proceed.
+`f7033b86c`. Step 9.4 Secure Accountless Onboarding received independent
+ACCEPT at `238f063a8` (V1+V2+EVID complete; contract `609127e29` +
+Amendment 1). Step 9.5 remains NOT STARTED.
 
 The product boundary is:
 
