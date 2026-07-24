@@ -69,6 +69,16 @@ func validEnvelope(id, sessionID string, generation int64, kind contract.EventKi
 
 // ── T2 baseline tests (4) ──
 
+// newTestDeviceStore creates a DeviceStore with a permissive GetAuth for tests
+// that need session CRUD without real device authorization.
+func newTestDeviceStore() *DeviceStore {
+	ds := NewDeviceStore()
+	ds.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
+		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
+	}
+	return ds
+}
+
 func TestBuildClosedTaxonomyAndGenerationGate(t *testing.T) {
 	for _, kind := range []contract.EventKind{
 		contract.EventProviderInvocationFinished, contract.EventApprovalRequested,
@@ -275,8 +285,8 @@ func openTestWriter(t *testing.T) *writer.Writer {
 // TestProductionDelivery verifies that the Notifier consumer loop delivers
 // real Locator JSON via PushSender when Timeline events are available.
 func TestProductionDelivery(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "push-token-abc")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "push-token-abc", 0)
 	sender := &stubSender{sent: make(chan struct{}, 16)}
 
 	var gen atomic.Int64
@@ -319,10 +329,10 @@ func TestProductionDelivery(t *testing.T) {
 // TestDeviceStorePerDeviceBindRevoke verifies per-device bind/revoke and
 // token isolation between devices.
 func TestDeviceStorePerDeviceBindRevoke(t *testing.T) {
-	s := NewDeviceStore()
+	s := newTestDeviceStore()
 
-	s.Bind("device-a", "token-a")
-	s.Bind("device-b", "token-b")
+	s.Bind("device-a", "token-a", 0)
+	s.Bind("device-b", "token-b", 0)
 
 	if tok := s.Token("device-a"); tok != "token-a" {
 		t.Errorf("device-a token = %q want token-a", tok)
@@ -357,8 +367,8 @@ func TestDeviceStorePerDeviceBindRevoke(t *testing.T) {
 	}
 
 	// Cursor is cleared on revoke.
-	s2 := NewDeviceStore()
-	s2.Bind("device-x", "token-x")
+	s2 := newTestDeviceStore()
+	s2.Bind("device-x", "token-x", 0)
 	s2.Cursor("device-x", Cursor{DeviceID: "device-x", LastEventID: "ev-5", LastGeneration: 3}, 0)
 	c := s2.GetCursor("device-x")
 	if c.LastEventID != "ev-5" {
@@ -513,13 +523,13 @@ func TestInsufficientPermission(t *testing.T) {
 // TestFlagOffZeroEffect verifies that flag-off means registration still
 // works but no push delivery happens.
 func TestFlagOffZeroEffect(t *testing.T) {
-	devices := NewDeviceStore()
+	devices := newTestDeviceStore()
 
 	// Without a writer, Notifier starts disabled (flag-off).
 	notifier := NewNotifier(nil, devices, nil, nil)
 
 	// Device registration still works (flag-off = zero-effect).
-	devices.Bind("device-1", "push-token")
+	devices.Bind("device-1", "push-token", 0)
 	if tok := devices.Token("device-1"); tok != "push-token" {
 		t.Errorf("registration must work without writer: %q", tok)
 	}
@@ -571,8 +581,8 @@ func TestFlagOffZeroEffect(t *testing.T) {
 // Dedup), stable tokens prevent duplicate notification delivery because
 // the device already received and stored them.
 func TestNotificationRestartRecovery(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "push-token")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "push-token", 0)
 	sender := &stubSender{sent: make(chan struct{}, 16)}
 
 	var gen atomic.Int64
@@ -899,9 +909,9 @@ func TestDegradedWriterFIFO(t *testing.T) {
 // continue receiving events. After the first goroutine finishes, the next
 // cycle launches a fresh one.
 func TestPerDeviceSingleflight(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-fast", "token-fast")
-	devices.Bind("device-slow", "token-slow")
+	devices := newTestDeviceStore()
+	devices.Bind("device-fast", "token-fast", 0)
+	devices.Bind("device-slow", "token-slow", 0)
 
 	var fastCount atomic.Int64
 	var slowBlocked atomic.Bool
@@ -965,8 +975,8 @@ func TestPerDeviceSingleflight(t *testing.T) {
 // TestSameDeviceOrderingAndMonotonicCursor verifies events are delivered in
 // order and the cursor only advances forward (monotonic).
 func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "token-1", 0)
 
 	var delivered []string
 	var mu sync.Mutex
@@ -1024,8 +1034,8 @@ func TestSameDeviceOrderingAndMonotonicCursor(t *testing.T) {
 
 	// At-most-once partial failure: cursor advances to last SUCCESS only.
 	// event4 succeeds, event5 fails → cursor = event4 position, NOT event5.
-	devices2 := NewDeviceStore()
-	devices2.Bind("device-2", "token-2")
+	devices2 := newTestDeviceStore()
+	devices2.Bind("device-2", "token-2", 0)
 	failSender := &failAfterNSender{failAfter: 1}
 	w2 := openTestWriter(t)
 	n2 := NewNotifier(w2, devices2, func(sid string) int64 { return 1 }, failSender)
@@ -1104,8 +1114,8 @@ func (s *selectiveHangSender) Send(deviceID, pushToken string, payload []byte) e
 // eventually succeeds AFTER Stop, the cursor is NOT written. The stopped
 // guard in the goroutine prevents late-success writes.
 func TestLateSuccessCursorNotWrittenAfterStop(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "token-1", 0)
 
 	block := make(chan struct{})
 	sender := &selectiveHangSender{
@@ -1153,8 +1163,8 @@ func TestLateSuccessCursorNotWrittenAfterStop(t *testing.T) {
 // check prevents it from writing a stale cursor. The new binding gets a
 // fresh epoch, and the old goroutine's epoch mismatch skips the write.
 func TestOldSendVsRevokeRebind(t *testing.T) {
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "token-1", 0)
 
 	block := make(chan struct{})
 	sender := &selectiveHangSender{
@@ -1174,8 +1184,8 @@ func TestOldSendVsRevokeRebind(t *testing.T) {
 
 	// Revoke + Rebind: bumps epoch, clears store, then re-registers.
 	notifier.RevokeDevice("device-1")
-	devices.Bind("device-1", "token-2") // re-register push token
-	notifier.BindDevice("device-1")     // bump epoch again
+	devices.Bind("device-1", "token-2", 0) // re-register push token
+	notifier.BindDevice("device-1")        // bump epoch again
 
 	// Unblock the old Send. The old goroutine captured epoch 0; after
 	// RevokeDevice+bumpEpoch+BindDevice+bumpEpoch, the current epoch is 2.
@@ -1208,8 +1218,8 @@ func TestOldSendVsRevokeRebind(t *testing.T) {
 // event fails, no prior success → cursor stays at its initial empty value.
 func TestCursorAdvancesToLastSuccessOnPartialFailure(t *testing.T) {
 	// Case A: event1 succeeds, event2 fails.
-	devices := NewDeviceStore()
-	devices.Bind("device-1", "token-1")
+	devices := newTestDeviceStore()
+	devices.Bind("device-1", "token-1", 0)
 	failSender := &failAfterNSender{failAfter: 1}
 	w := openTestWriter(t)
 	notifier := NewNotifier(w, devices, func(sid string) int64 { return 1 }, failSender)
@@ -1239,8 +1249,8 @@ func TestCursorAdvancesToLastSuccessOnPartialFailure(t *testing.T) {
 	notifier.Stop()
 
 	// Case B: first send fails → cursor stays empty (no prior success).
-	devices2 := NewDeviceStore()
-	devices2.Bind("device-2", "token-2")
+	devices2 := newTestDeviceStore()
+	devices2.Bind("device-2", "token-2", 0)
 	failSender2 := &failAfterNSender{failAfter: 0} // first call fails
 	notifier2 := NewNotifier(w, devices2, func(sid string) int64 { return 1 }, failSender2)
 	notifier2.SetEnabled(true)
@@ -1275,4 +1285,161 @@ func (s *failAfterNSender) Send(deviceID, pushToken string, payload []byte) erro
 	json.Unmarshal(payload, &loc)
 	s.sent = append(s.sent, loc)
 	return nil
+}
+
+// ── 9.4-D: push-registration epoch-bound tests ──
+
+// registryBackedStore creates a DeviceStore whose GetAuth delegates to a real
+// DeviceRegistry backed by a temp file.
+func registryBackedStore(t *testing.T) (*DeviceStore, *devicetrust.DeviceRegistry) {
+	t.Helper()
+	store := &devicetrust.FileDeviceStore{Path: t.TempDir() + "/devices.json"}
+	reg, err := devicetrust.NewDeviceRegistry(store)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	ds := NewDeviceStore()
+	ds.GetAuth = reg.GetAuth
+	return ds, reg
+}
+
+func TestBind_RevokedDeviceRejected(t *testing.T) {
+	ds, reg := registryBackedStore(t)
+	_, pub, _ := devicetrust.GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	// Bind at the current epoch: succeeds.
+	if err := ds.Bind(dev.DeviceID, "token-1", dev.Epoch); err != nil {
+		t.Fatalf("initial bind: %v", err)
+	}
+
+	// Revoke the device.
+	if err := reg.Revoke(dev.DeviceID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Try to bind with the revoked device's epoch — must fail (inactive).
+	err := ds.Bind(dev.DeviceID, "token-2", dev.Epoch)
+	if err == nil {
+		t.Fatal("bind after revoke must be rejected (device is not active)")
+	}
+	t.Logf("revoked bind error: %v", err)
+
+	// Token must not have been overwritten.
+	if got := ds.Token(dev.DeviceID); got != "token-1" {
+		t.Fatalf("token after rejected bind = %q, want token-1", got)
+	}
+}
+
+func TestBind_StaleEpochAfterRevokeReAddSameKey(t *testing.T) {
+	ds, reg := registryBackedStore(t)
+	_, pub, _ := devicetrust.GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	// Bind at epoch 0 succeeds.
+	if err := ds.Bind(dev.DeviceID, "token-0", 0); err != nil {
+		t.Fatalf("initial bind: %v", err)
+	}
+
+	// Revoke bumps epoch to 1.
+	reg.Revoke(dev.DeviceID)
+
+	// Stale epoch 0 must be rejected (active=false after revoke).
+	err := ds.Bind(dev.DeviceID, "token-stale", 0)
+	if err == nil {
+		t.Fatal("stale epoch 0 after revoke must be rejected")
+	}
+	t.Logf("stale epoch error: %v", err)
+
+	// Even the current (post-revoke) epoch must be rejected because device is inactive.
+	auth := reg.GetAuth(dev.DeviceID)
+	err = ds.Bind(dev.DeviceID, "token-current", int64(auth.Epoch))
+	if err == nil {
+		t.Fatal("current epoch for revoked device must be rejected")
+	}
+}
+
+func TestBind_MissingAuthorityFailClosed(t *testing.T) {
+	ds := NewDeviceStore()
+	// No GetAuth set — must fail closed.
+	err := ds.Bind("device-1", "token-1", 0)
+	if err == nil {
+		t.Fatal("bind without GetAuth must fail (no authority configured)")
+	}
+	t.Logf("missing authority error: %v", err)
+}
+
+func TestBind_RevokeWinsRace(t *testing.T) {
+	// Use GetAuth as a barrier: first call returns active+epoch N.
+	// Between the first call and the commit, goroutine B revokes.
+	// The Bind must detect the stale state and reject.
+
+	ds, reg := registryBackedStore(t)
+	_, pub, _ := devicetrust.GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	var callCount int32
+	revokeCh := make(chan struct{})
+	revokeDone := make(chan struct{})
+
+	ds.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			// First (and only) call inside Bind lock: signal B to revoke, wait.
+			close(revokeCh)
+			<-revokeDone
+		}
+		return reg.GetAuth(deviceID)
+	}
+
+	var wg sync.WaitGroup
+	var bindErr error
+
+	// Goroutine A: Bind at epoch 0.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		bindErr = ds.Bind(dev.DeviceID, "token-a", 0)
+	}()
+
+	// Goroutine B: wait for A to enter GetAuth, then revoke.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-revokeCh
+		reg.Revoke(dev.DeviceID)
+		close(revokeDone)
+	}()
+
+	wg.Wait()
+
+	if bindErr == nil {
+		t.Fatal("revoke wins: Bind must fail after revoke interleaves during GetAuth")
+	}
+	t.Logf("revoke wins bind error: %v", bindErr)
+
+	// Verify: no push binding exists.
+	if tok := ds.Token(dev.DeviceID); tok != "" {
+		t.Fatalf("push binding leaked after rejected bind: token=%q", tok)
+	}
+}
+
+func TestBind_WinsBeforeRevoke(t *testing.T) {
+	ds, reg := registryBackedStore(t)
+	_, pub, _ := devicetrust.GenKeypair(t)
+	dev, _ := reg.Add(pub, "test-device")
+
+	// Bind succeeds at epoch 0.
+	if err := ds.Bind(dev.DeviceID, "token-1", 0); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	// Then revoke removes the binding.
+	reg.Revoke(dev.DeviceID)
+	ds.Revoke(dev.DeviceID) // notification-level revoke
+
+	// Verify no delivery target.
+	if tok := ds.Token(dev.DeviceID); tok != "" {
+		t.Fatalf("push binding leaked after revoke: token=%q", tok)
+	}
 }

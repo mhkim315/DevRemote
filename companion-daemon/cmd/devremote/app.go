@@ -483,8 +483,10 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	registerPush := func(w http.ResponseWriter, r *http.Request) {
 		principal := devicetrust.PrincipalFromContext(r.Context())
 		deviceID := ""
+		deviceEpoch := int64(0)
 		if principal != nil {
 			deviceID = principal.DeviceID
+			deviceEpoch = principal.DeviceEpoch
 		} else {
 			deviceID = r.URL.Query().Get("deviceId")
 		}
@@ -497,7 +499,16 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			http.Error(w, "deviceId is required", http.StatusBadRequest)
 			return
 		}
-		n1Devices.Bind(deviceID, token)
+		if principal != nil {
+			// Remote mode: epoch-bound registration.
+			if err := n1Devices.Bind(deviceID, token, deviceEpoch); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+		} else {
+			// Insecure-local mode: direct registration without authority.
+			n1Devices.BindLocal(deviceID, token)
+		}
 		if n1Notifier != nil {
 			n1Notifier.BindDevice(deviceID)
 		}
@@ -759,6 +770,11 @@ func (a *App) Run(ctx context.Context) error {
 	// sessions issued under an old epoch (device was revoked/replaced).
 	if a.sessionMgr != nil && a.deviceRegistry != nil {
 		a.sessionMgr.GetAuth = a.deviceRegistry.GetAuth
+	}
+	// 9.4-D: wire GetAuth on the notification device store so push registration
+	// atomically validates active state + epoch before committing the binding.
+	if a.n1DeviceStore != nil && a.deviceRegistry != nil {
+		a.n1DeviceStore.GetAuth = a.deviceRegistry.GetAuth
 	}
 	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
 	// 0600 socket can revoke a device and read the redacted audit trail.

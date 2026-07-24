@@ -133,6 +133,11 @@ type DeviceStore struct {
 	tokens map[string]string // deviceID → pushToken
 	cursor map[string]Cursor // deviceID → cursor
 	epochs map[string]*int64 // deviceID → epoch pointer (shared with Notifier snapshot)
+
+	// GetAuth returns the authoritative device authorization state (Active+Epoch).
+	// When set, Bind atomically validates active state and epoch before committing
+	// the push binding. Nil → fail-closed (ErrNoAuthority).
+	GetAuth func(deviceID string) devicetrust.AuthorizationState
 }
 
 func NewDeviceStore() *DeviceStore {
@@ -143,9 +148,37 @@ func NewDeviceStore() *DeviceStore {
 	}
 }
 
-// Bind registers a push token and bumps the binding epoch. Bumping the
-// epoch invalidates any in-flight goroutine that captured the old epoch.
-func (s *DeviceStore) Bind(deviceID, pushToken string) {
+// Bind registers a push token and bumps the binding epoch. The authority
+// (GetAuth) performs atomic active+epoch validation under the store lock:
+// device must exist, be active, and the current epoch must match the
+// principal's epoch. A stale or revoked device is rejected.
+//
+// Nil GetAuth → fail-closed. Production must wire the authority.
+//
+// Bumping the epoch invalidates any in-flight goroutine that captured the
+// old epoch.
+func (s *DeviceStore) Bind(deviceID, pushToken string, principalEpoch int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 9.4-D: atomic active+epoch validation before push-binding commit.
+	if s.GetAuth == nil {
+		return fmt.Errorf("notification: push registration rejected: no authority configured")
+	}
+	auth := s.GetAuth(deviceID)
+	if !auth.Active {
+		return fmt.Errorf("notification: push registration rejected: device is not active")
+	}
+	if auth.Epoch != uint64(principalEpoch) {
+		return fmt.Errorf("notification: push registration rejected: stale device epoch (principal=%d, current=%d)", principalEpoch, auth.Epoch)
+	}
+	s.tokens[deviceID] = pushToken
+	s.bumpEpochLocked(deviceID)
+	return nil
+}
+
+// BindLocal registers a push token without authority checks. For insecure-local
+// (dev-only) mode where there is no authenticated principal.
+func (s *DeviceStore) BindLocal(deviceID, pushToken string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tokens[deviceID] = pushToken
@@ -673,7 +706,10 @@ func RegisterHandlers(mux *http.ServeMux, cfg NotificationHandlerConfig) {
 				return
 			}
 			if cfg.Devices != nil {
-				cfg.Devices.Bind(deviceID, token)
+				if err := cfg.Devices.Bind(deviceID, token, principal.DeviceEpoch); err != nil {
+					http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusConflict)
+					return
+				}
 			}
 			w.WriteHeader(http.StatusOK)
 		}, devicetrust.PermSessionsRead))
