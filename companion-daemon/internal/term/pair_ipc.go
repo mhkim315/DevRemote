@@ -42,8 +42,8 @@ type PairingRequest struct {
 	DisplayName    string `json:"displayName"`
 	PhoneNonce     []byte `json:"phoneNonce"`
 	BootstrapToken string `json:"bootstrapToken"`
-// QR metadata — echoed by mobile from the QR code and verified by the bridge
-// at PairingHost's pre-proof candidate boundary.
+	// QR metadata — echoed by mobile from the QR code and verified by the bridge
+	// at PairingHost's pre-proof candidate boundary.
 	QRHostID       string `json:"hostId,omitempty"`
 	QRDaemonBootID string `json:"daemonBootId,omitempty"`
 	QRChallengeID  string `json:"challengeId,omitempty"`
