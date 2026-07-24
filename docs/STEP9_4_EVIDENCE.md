@@ -1,7 +1,7 @@
 # Step 9.4 Evidence — Secure Accountless Onboarding
 
 **IMPL SHA:** `238f063a8`
-**EVID SHA:** (this commit)
+**EVID SHA:** `7e34f95ef`
 **CONTRACT SHA:** `609127e29` + Amendment 1 (QR mediation seam)
 **IMPLEMENTATION BASE:** `f7033b86c` (Step 9.3)
 **Date:** 2026-07-24
