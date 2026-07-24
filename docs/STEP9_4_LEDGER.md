@@ -3,7 +3,7 @@
 **Status:** V1_ACCEPT + V2 residuals closed — ready for V2 final
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
-**Last update:** V2 near-final
+**Last update:** V2 final-ready (ledger cleanup SHA 694eb73ee)
 
 ## Key Identities
 
@@ -46,4 +46,5 @@ handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → dev
 | 2026-07-24 | 9.4-D ACCEPTED at 5632868c6 (44 rounds) |
 | 2026-07-24 | V1 Integrated ACCEPT at 5632868c6 |
 | 2026-07-24 | V1 pairing order fix ACCEPT at f76042ed3 |
-| 2026-07-24 | V2 + evidence sync ready for V2 final |
+| 2026-07-24 | Ledger cleanup at 694eb73ee |
+| 2026-07-24 | V2 + evidence sync ready for V2 final (eeb95a223) |
