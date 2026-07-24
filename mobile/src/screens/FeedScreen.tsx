@@ -1,5 +1,6 @@
 import React, {useRef, useState, useCallback, useEffect, useMemo} from 'react';
 import { terminalURL, listSessions, getTranscript, stopSession, killSession, deleteSessionHistory, ConnectivityFailure, PokitError } from '../lib/client';
+import type { TranscriptAvailability } from '../lib/client';
 import type { TranscriptSegment, TranscriptResponse } from '../lib/client';
 import { E8g2Transcript } from '../components/TranscriptRenderer';
 import { getWSTicket, wsTicketURL } from '../lib/wsTicket';
@@ -113,6 +114,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   const [transcriptEvents, setTranscriptEvents] = useState<any[]>([]);
   const [fallbackEvents, setFallbackEvents] = useState<any[]>([]);
   const [byteStreamSuppressed, setByteStreamSuppressed] = useState(false);
+  // R3: server-authoritative transcript availability state.
+  const [transcriptAvailability, setTranscriptAvailability] = useState<TranscriptAvailability>('healthy_empty');
+  const [transcriptAvailabilityReason, setTranscriptAvailabilityReason] = useState('');
   const [newOutputCount, setNewOutputCount] = useState(0);
   const lastSeenSeqRef = useRef(0);
   const transcriptMaxSeqRef = useRef(0);
@@ -408,6 +412,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
               return [...prev, ...fresh].sort((a: any, b: any) => a.seq - b.seq);
             });
             setByteStreamSuppressed(!!resp.byteStreamSuppressed);
+            setTranscriptAvailability(resp.availability);
+            setTranscriptAvailabilityReason('');
             setActivityError('');
             const allSeqs = [...resp.semantic, ...(resp.fallback || [])];
             const maxSeq = allSeqs.reduce((m: number, e: any) => Math.max(m, e.seq || 0), 0);
@@ -420,10 +426,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
             }
           } else if (resp === null) {
             setActivityError('Transcript response validation failed.');
+            setTranscriptAvailability('temporarily_unavailable');
           }
         })
         .catch(async (err) => {
           console.error(err);
+          setTranscriptAvailability('temporarily_unavailable');
           if (err instanceof PokitError) {
             setActivityError(err.failure === ConnectivityFailure.NetworkUnreachable
               ? 'Transcript endpoint unreachable.'
@@ -994,19 +1002,52 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           )}
         </View>
 
-        {/* PA3 Step 1: Transcript Mode — sole read-only history. */}
+        {/* R3: Transcript Mode — server-authoritative availability state drives
+            truthful messaging. unavailable !== empty. */}
         <View style={[styles.transcriptContainer, {display: activeTab === 'transcript' ? 'flex' : 'none'}]}>
-          {/* E8g6: show observe/degraded state for best-effort transcript. */}
-          {isBestEffortTranscript && (
-            <View style={[styles.transcriptInfo, {backgroundColor: '#1a1a0a'}]}>
-              <Text style={styles.transcriptInfoText}>Best-effort transcript — screen snapshot based. May show duplicates.</Text>
+          {/* R3: availability banner — truthful per-state messaging. */}
+          {transcriptAvailability === 'provider_projection_unavailable' && (
+            <View style={styles.transcriptStateBanner}>
+              <Text style={styles.transcriptStateText}>Transcript not available for this session type</Text>
             </View>
           )}
-          {!isBestEffortTranscript && (
-          <View style={styles.transcriptInfo}>
-            <Text style={styles.transcriptInfoText}>Read-only history. Live Terminal is source of truth for interactive/TUI.</Text>
-          </View>
+          {transcriptAvailability === 'temporarily_unavailable' && (
+            <View style={[styles.transcriptStateBanner, {backgroundColor: 'rgba(248, 81, 73, 0.08)'}]}>
+              <Text style={[styles.transcriptStateText, {color: '#f85149'}]}>Transcript temporarily unavailable — retrying automatically</Text>
+            </View>
           )}
+          {transcriptAvailability === 'unauthorized' && (
+            <View style={[styles.transcriptStateBanner, {backgroundColor: 'rgba(248, 81, 73, 0.08)'}]}>
+              <Text style={[styles.transcriptStateText, {color: '#f85149'}]}>Transcript not authorized</Text>
+            </View>
+          )}
+          {transcriptAvailability === 'session_or_generation_stale' && (
+            <View style={styles.transcriptStateBanner}>
+              <Text style={styles.transcriptStateText}>Session ended — transcript is read-only</Text>
+            </View>
+          )}
+          {transcriptAvailability === 'gap_or_degraded' && (
+            <View style={[styles.transcriptStateBanner, {backgroundColor: 'rgba(248, 181, 0, 0.08)'}]}>
+              <Text style={[styles.transcriptStateText, {color: '#f8b500'}]}>Transcript has gaps — some output may be missing</Text>
+            </View>
+          )}
+
+          {/* Existing transcript info for non-degraded states. */}
+          {transcriptAvailability === 'healthy' || transcriptAvailability === 'healthy_empty' ? (
+            <>
+              {isBestEffortTranscript && (
+                <View style={[styles.transcriptInfo, {backgroundColor: '#1a1a0a'}]}>
+                  <Text style={styles.transcriptInfoText}>Best-effort transcript — screen snapshot based. May show duplicates.</Text>
+                </View>
+              )}
+              {!isBestEffortTranscript && (
+                <View style={styles.transcriptInfo}>
+                  <Text style={styles.transcriptInfoText}>Read-only history. Live Terminal is source of truth for interactive/TUI.</Text>
+                </View>
+              )}
+            </>
+          ) : null}
+
           {newOutputCount > 0 && (
             <TouchableOpacity style={styles.newOutputBanner} onPress={() => {
               lastSeenSeqRef.current = transcriptMaxSeqRef.current;
@@ -1040,6 +1081,12 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
                   <Text style={styles.fallbackHeader}>⌇ Terminal output (snapshot / degraded)</Text>
                   <E8g2Transcript events={fallbackEvents} />
                 </View>
+              ) : transcriptAvailability === 'healthy_empty' ? (
+                <Text style={styles.emptyActivityText}>Waiting for output...</Text>
+              ) : transcriptAvailability === 'session_or_generation_stale' ? (
+                <Text style={styles.emptyActivityText}>Session ended — no transcript content.</Text>
+              ) : transcriptAvailability === 'gap_or_degraded' ? (
+                <Text style={styles.emptyActivityText}>Transcript degraded — output may be incomplete.</Text>
               ) : (
                 <Text style={styles.emptyActivityText}>No transcript yet — open Terminal to start capture.</Text>
               )}
@@ -1332,6 +1379,9 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
   },
+  // R3: transcript availability state banner styles.
+  transcriptStateBanner: { backgroundColor: '#0D2D45', paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#1E91B3' },
+  transcriptStateText: { color: '#45EBE9', fontSize: 12, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
   returnBtn: {
     backgroundColor: '#1C1C1E',
     padding: 12,

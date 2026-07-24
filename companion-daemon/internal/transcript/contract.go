@@ -18,7 +18,47 @@ import (
 
 // ContractVersion identifies this Transcript contract revision.
 // Bump only on a deliberate, reviewed contract change.
-const ContractVersion = "t3.1"
+const ContractVersion = "t3.2"
+
+// ── Transcript availability states (R3) ──
+
+// TranscriptAvailability is the closed set of transcript surface availability
+// states. The server is the sole authority; the client MUST NOT infer state
+// from segment count, adapter label, or connection status.
+type TranscriptAvailability string
+
+const (
+	// AvailabilityHealthy: transcript is current and populated with segments.
+	AvailabilityHealthy TranscriptAvailability = "healthy"
+
+	// AvailabilityHealthyEmpty: transcript projection exists but has no
+	// segments yet (idle agent, no output). NOT an error.
+	AvailabilityHealthyEmpty TranscriptAvailability = "healthy_empty"
+
+	// AvailabilityProviderProjectionUnavailable: the session provider does
+	// not support transcript projection. No arbiter exists for this session.
+	AvailabilityProviderProjectionUnavailable TranscriptAvailability = "provider_projection_unavailable"
+
+	// AvailabilityTemporarilyUnavailable: the transcript service cannot
+	// serve this session (store error, internal failure). Retryable.
+	AvailabilityTemporarilyUnavailable TranscriptAvailability = "temporarily_unavailable"
+
+	// AvailabilityGapOrDegraded: events were dropped or the projection
+	// source is degraded. Segments may have gaps.
+	AvailabilityGapOrDegraded TranscriptAvailability = "gap_or_degraded"
+
+	// AvailabilityByteStreamSuppressed: PTY transcript projection has been
+	// permanently suppressed after terminal input (echo privacy).
+	AvailabilityByteStreamSuppressed TranscriptAvailability = "byte_stream_suppressed_after_input"
+
+	// AvailabilityUnauthorized: the principal lacks read permission for
+	// this session's transcript. Set at the HTTP auth boundary.
+	AvailabilityUnauthorized TranscriptAvailability = "unauthorized"
+
+	// AvailabilitySessionOrGenerationStale: the session has ended or its
+	// generation has been replaced. No new segments will be produced.
+	AvailabilitySessionOrGenerationStale TranscriptAvailability = "session_or_generation_stale"
+)
 
 // ── Segment kind vocabulary ──
 

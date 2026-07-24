@@ -377,6 +377,11 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 	cleanup, won, done := o.finalizeRecord(id, g)
 	l.Unlock()
 	if won {
+		// R3: mark the transcript session as ended so availability
+		// reflects session_or_generation_stale.
+		if o.transcript != nil {
+			o.transcript.MarkSessionEnded(id)
+		}
 		if cleanup != nil {
 			cleanup(context.Background())
 		}

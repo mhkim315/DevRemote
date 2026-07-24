@@ -438,8 +438,29 @@ export interface TranscriptResponse {
   fallback?: TranscriptSegment[];
   primarySource: 'agent_event' | 'byte_stream' | 'snapshot_delta' | 'unknown';
   byteStreamSuppressed?: boolean;
+  // R3: server-authoritative transcript availability state.
+  // The client must not infer state from segment count or adapter label.
+  availability: TranscriptAvailability;
   contractVersion: string;
 }
+
+// R3: closed set of server-authoritative transcript availability states.
+export type TranscriptAvailability =
+  | 'healthy'
+  | 'healthy_empty'
+  | 'provider_projection_unavailable'
+  | 'temporarily_unavailable'
+  | 'gap_or_degraded'
+  | 'byte_stream_suppressed_after_input'
+  | 'unauthorized'
+  | 'session_or_generation_stale';
+
+const VALID_AVAILABILITIES: ReadonlySet<string> = new Set([
+  'healthy', 'healthy_empty', 'provider_projection_unavailable',
+  'temporarily_unavailable', 'gap_or_degraded',
+  'byte_stream_suppressed_after_input', 'unauthorized',
+  'session_or_generation_stale',
+]);
 
 const VALID_KINDS = ['agent_event', 'terminal_output', 'input_boundary', 'degraded', 'ui_omitted', 'unknown'];
 const VALID_SOURCES = ['agent_event', 'byte_stream', 'snapshot_delta', 'unknown'];
@@ -453,7 +474,7 @@ const SEGMENT_KNOWN_FIELDS = new Set([
   'id','seq','sessionId','kind','source','text','agentEventRef','agentKind',
   'eventType','toolName','confidence','byteCount','degradedReason','observedAt','contractVersion'
 ]);
-const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','byteStreamSuppressed','contractVersion','generation']);
+const ENVELOPE_KNOWN_FIELDS = new Set(['sessionId','semantic','fallback','primarySource','byteStreamSuppressed','availability','contractVersion','generation']);
 
 function byteLength(s: string): number {
   // Count UTF-8 bytes (not JS character count).
@@ -498,7 +519,7 @@ function validateSegment(seg: any, expectedSessionID: string): TranscriptSegment
   if (seg.agentEventRef !== undefined && (typeof seg.agentEventRef !== 'string' || byteLength(seg.agentEventRef) > MAX_ID_LEN)) return null;
   if (seg.eventType !== undefined && (typeof seg.eventType !== 'string' || !VALID_EVENT_TYPES.includes(seg.eventType))) return null;
   if (seg.degradedReason !== undefined && (typeof seg.degradedReason !== 'string' || byteLength(seg.degradedReason) > MAX_REASON_LEN)) return null;
-  if (seg.contractVersion !== 't3.1') return null;
+  if (seg.contractVersion !== 't3.2') return null;
   // Reject unknown fields
   for (const k of Object.keys(seg)) {
     if (!SEGMENT_KNOWN_FIELDS.has(k)) return null;
@@ -511,8 +532,10 @@ function validateTranscriptResponse(data: any, expectedSessionID: string): Trans
   if (data.sessionId !== expectedSessionID) return null;
   if (!Array.isArray(data.semantic)) return null;
   if (data.semantic.length > MAX_RESPONSE_SEGMENTS) return null;
-  if (data.contractVersion !== 't3.1') return null;
+  if (data.contractVersion !== 't3.2') return null;
   if (!VALID_SOURCES.includes(data.primarySource)) return null;
+  // R3: validate availability field.
+  if (typeof data.availability !== 'string' || !VALID_AVAILABILITIES.has(data.availability)) return null;
   // Reject unknown envelope fields
   for (const k of Object.keys(data)) {
     if (!ENVELOPE_KNOWN_FIELDS.has(k)) return null;

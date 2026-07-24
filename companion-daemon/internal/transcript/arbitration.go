@@ -104,8 +104,12 @@ type TranscriptResponse struct {
 	// permanently suppressed (e.g. after terminal input for echo privacy).
 	// The UI should indicate that live terminal output is not available
 	// in the Transcript.
-	ByteStreamSuppressed bool   `json:"byteStreamSuppressed,omitempty"`
-	ContractVersion      string `json:"contractVersion"`
+	ByteStreamSuppressed bool `json:"byteStreamSuppressed,omitempty"`
+	// R3: server-authoritative transcript availability state. The client
+	// must display truthful messaging per state and must not infer state
+	// from segment count, adapter label, or connection status.
+	Availability    TranscriptAvailability `json:"availability"`
+	ContractVersion string                 `json:"contractVersion"`
 }
 
 // NewTranscriptResponse builds the separated response.
@@ -114,7 +118,8 @@ type TranscriptResponse struct {
 //   - SourceByteStream segments → semantic when primary, fallback when AgentEvent primary
 //   - SourceSnapshot segments → always fallback (degraded channel)
 //   - primarySource reflects actual dominant source
-func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, arb *SourceArbiter) TranscriptResponse {
+//   - availability is the R3 server-authoritative surface state
+func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, arb *SourceArbiter, availability TranscriptAvailability) TranscriptResponse {
 	if allSegments == nil {
 		allSegments = []TranscriptSegment{}
 	}
@@ -171,6 +176,7 @@ func NewTranscriptResponse(sessionID string, allSegments []TranscriptSegment, ar
 		Fallback:             fallback,
 		PrimarySource:        primary,
 		ByteStreamSuppressed: suppressed,
+		Availability:         availability,
 		ContractVersion:      ContractVersion,
 	}
 }

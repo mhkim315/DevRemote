@@ -12,23 +12,25 @@ import (
 // It owns the bounded store, projectors, per-session arbitration state,
 // and per-session bounded chunk queues for byte-stream projection.
 type Service struct {
-	store      *Store
-	agentProj  *AgentEventProjector
-	byteProjs  map[string]*ByteStreamProjector
-	arbiters   map[string]*SourceArbiter
-	queues     map[string]*chunkQueue
-	currentGen map[string]int64
-	mu         sync.Mutex
+	store        *Store
+	agentProj    *AgentEventProjector
+	byteProjs    map[string]*ByteStreamProjector
+	arbiters     map[string]*SourceArbiter
+	queues       map[string]*chunkQueue
+	currentGen   map[string]int64
+	sessionEnded map[string]bool // R3: tracks sessions whose process has exited
+	mu           sync.Mutex
 }
 
 func NewService(cfg StoreConfig) *Service {
 	return &Service{
-		store:      NewStore(cfg),
-		agentProj:  NewAgentEventProjector(),
-		byteProjs:  make(map[string]*ByteStreamProjector),
-		arbiters:   make(map[string]*SourceArbiter),
-		queues:     make(map[string]*chunkQueue),
-		currentGen: make(map[string]int64),
+		store:        NewStore(cfg),
+		agentProj:    NewAgentEventProjector(),
+		byteProjs:    make(map[string]*ByteStreamProjector),
+		arbiters:     make(map[string]*SourceArbiter),
+		queues:       make(map[string]*chunkQueue),
+		currentGen:   make(map[string]int64),
+		sessionEnded: make(map[string]bool),
 	}
 }
 
@@ -234,6 +236,7 @@ func (s *Service) ClearTranscript(sessionID string) {
 	s.store.Clear(sessionID)
 	delete(s.byteProjs, sessionID)
 	delete(s.arbiters, sessionID)
+	delete(s.sessionEnded, sessionID)
 	s.mu.Unlock()
 	RemoveLaunch(sessionID)
 }
@@ -294,10 +297,63 @@ func (s *Service) FeedBytesBatch(sessionID string, segments []TranscriptSegment)
 func (s *Service) BuildResponse(sessionID string, segments []TranscriptSegment) TranscriptResponse {
 	s.mu.Lock()
 	arb := s.arbiters[sessionID]
+	ended := s.sessionEnded[sessionID]
 	s.mu.Unlock()
-	resp := NewTranscriptResponse(sessionID, segments, arb)
+
+	availability := s.computeAvailability(sessionID, arb, len(segments) > 0, ended)
+	resp := NewTranscriptResponse(sessionID, segments, arb, availability)
 	resp.Generation = s.GetGeneration(sessionID)
 	return resp
+}
+
+// R3: computeAvailability determines the transcript surface availability state
+// from the arbiter state, segment presence, and session lifecycle.
+// The server is the sole authority; the client MUST NOT infer state.
+func (s *Service) computeAvailability(sessionID string, arb *SourceArbiter, hasSegments bool, sessionEnded bool) TranscriptAvailability {
+	// Session has ended — no new segments will be produced, regardless of
+	// arbiter state or segment presence.
+	if sessionEnded {
+		return AvailabilitySessionOrGenerationStale
+	}
+
+	// No arbiter means no projection was ever established for this session.
+	if arb == nil {
+		return AvailabilityProviderProjectionUnavailable
+	}
+
+	// Byte stream permanently suppressed after terminal input.
+	if arb.IsByteStreamSuppressed() {
+		return AvailabilityByteStreamSuppressed
+	}
+
+	// Degraded source — gaps present.
+	if arb.IsDegraded() {
+		return AvailabilityGapOrDegraded
+	}
+
+	// Healthy but empty — projection exists, no content yet.
+	if !hasSegments {
+		return AvailabilityHealthyEmpty
+	}
+
+	// Healthy and populated.
+	return AvailabilityHealthy
+}
+
+// MarkSessionEnded records that the session process has exited. Once ended,
+// the transcript availability transitions to session_or_generation_stale.
+// Idempotent.
+func (s *Service) MarkSessionEnded(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionEnded[sessionID] = true
+}
+
+// IsSessionEnded reports whether the session has been marked as ended.
+func (s *Service) IsSessionEnded(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionEnded[sessionID]
 }
 
 func (s *Service) CloseSessionQueue(sessionID string, generation int64) {
