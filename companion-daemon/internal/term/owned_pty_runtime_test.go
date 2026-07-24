@@ -293,6 +293,7 @@ func TestOwnedCreate_LiveWinnerSurvivesRevokedSlowCreate(t *testing.T) {
 	liveReader := newChannelBlockingReader()
 	defer liveReader.Close()
 	liveHandle := &v1TestHandle{Reader: liveReader}
+	liveCleanup := &v1TestCleanup{}
 
 	store := &devicetrust.FileDeviceStore{Path: t.TempDir() + "/devices.json"}
 	reg, err := devicetrust.NewDeviceRegistry(store)
@@ -305,7 +306,9 @@ func TestOwnedCreate_LiveWinnerSurvivesRevokedSlowCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	o, err := NewOwnedPTYRuntime(reg, &v1TestLauncher{handle: liveHandle}, nil)
+	o, err := NewOwnedPTYRuntime(reg, &scriptedLauncher{results: []scriptedResult{
+		{handle: liveHandle, cleanup: liveCleanup},
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +317,8 @@ func TestOwnedCreate_LiveWinnerSurvivesRevokedSlowCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := o.Get(id); !ok {
+	entry, ok := o.Get(id)
+	if !ok {
 		t.Fatal("live entry not created")
 	}
 
@@ -327,14 +331,25 @@ func TestOwnedCreate_LiveWinnerSurvivesRevokedSlowCreate(t *testing.T) {
 		t.Fatal("expected error from revoked device create")
 	}
 
-	if _, ok := o.Get(id); !ok {
+	// Live entry must still exist with the same identity.
+	entry2, ok := o.Get(id)
+	if !ok {
 		t.Fatalf("live entry missing after revoked create")
 	}
+	if entry2.Generation != entry.Generation || entry2.Identity.InstanceID != entry.Identity.InstanceID {
+		t.Fatalf("live entry altered: gen %d→%d, identity %q→%q",
+			entry.Generation, entry2.Generation, entry.Identity.InstanceID, entry2.Identity.InstanceID)
+	}
+	// Live handle untouched.
 	liveHandle.mu.Lock()
 	killed := liveHandle.killed
 	liveHandle.mu.Unlock()
 	if killed > 0 {
-		t.Fatalf("live winner was killed by revoked create: kill count=%d", killed)
+		t.Fatalf("live winner was killed: kill count=%d", killed)
+	}
+	// Live cleanup untouched (process NOT killed by denied create).
+	if liveCleanup.calls != 0 {
+		t.Fatalf("live cleanup calls = %d, want 0 (winner untouched)", liveCleanup.calls)
 	}
 }
 
