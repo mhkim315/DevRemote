@@ -122,6 +122,9 @@ func (g *ManagedSessionRegistry) RegisterIncarnation(authorizer devicetrust.Muta
 	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
 		return err
 	}
+	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
+		return err
+	}
 	if g.closed {
 		return fmt.Errorf("managed registry closed")
 	}
@@ -156,6 +159,9 @@ func (g *ManagedSessionRegistry) RestoreIncarnation(authorizer devicetrust.Mutat
 	defer g.mu.Unlock()
 	if authorizer == nil {
 		return devicetrust.ErrNoAuthority
+	}
+	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
+		return err
 	}
 	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
 		return err

@@ -534,6 +534,9 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	if err := c.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
 		return ResumeHandle{}, false
 	}
+	if err := c.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+		return ResumeHandle{}, false
+	}
 	if len(c.entries) >= maxCoordinatorEntries {
 		return ResumeHandle{}, false
 	}

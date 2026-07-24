@@ -865,7 +865,10 @@ func (rt *claudeManagedRuntime) emitOperational(kind OperationalEventKind, sourc
 		Kind: kind, Provider: "claude", SessionID: rt.sessionID,
 		RuntimeID: rt.runtimeID, LaunchGeneration: rt.epoch,
 		SourceID: sourceID, SourcePosition: sourcePosition,
-		ReferenceID: referenceID, OccurredAt: clockNow().UTC(),
+		// This callback may run after a test has restored the injectable
+		// clock. Use the wall clock for the asynchronous event timestamp so
+		// the callback cannot race test-only clock replacement.
+		ReferenceID: referenceID, OccurredAt: time.Now().UTC(),
 	})
 }
 
@@ -1382,6 +1385,15 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		os.RemoveAll(hookDir)
 		return nil, fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
 	}
+	// Recheck after the initial authorization and immediately before the
+	// coordinator-owned resume commit. A revoke that wins this gap must not
+	// leave a resumable process binding behind.
+	if err := s.authorizer.AuthorizeCommit(ctx.deviceID, ctx.deviceEpoch, devicetrust.IntentApprovalResume); err != nil {
+		ctx.coordinator.CancelEntry(ctx.claimToken)
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return nil, err
+	}
 	// Place the same value in the immutable context for the bridge
 	// to pass to ClaimWrite.
 	ctx.resumeLaunchGen = epoch
@@ -1869,6 +1881,9 @@ func (s *ManagedClaudeService) claimTerminalIntent(
 	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+		return nil, nil, nil, err
+	}
 	rt.terminalIntent = true
 	return rt, s.coordinator, s.approvals, nil
 }
@@ -1885,6 +1900,10 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64, deviceID st
 		return fmt.Errorf("managed claude session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
 		s.mu.Unlock()
 		return err

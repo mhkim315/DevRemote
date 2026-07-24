@@ -864,6 +864,10 @@ func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64, de
 		s.mu.Unlock()
 		return nil, err
 	}
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	s.mu.Unlock()
 	return rt, nil
 }
@@ -960,6 +964,10 @@ func (s *ManagedCodexService) Delete(sessionID string, epoch int64, deviceID str
 		return fmt.Errorf("managed session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
 		s.mu.Unlock()
 		return err

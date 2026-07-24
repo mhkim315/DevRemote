@@ -37,6 +37,11 @@ func (b *commandBroker) PutAuthorized(sessionID string, command []byte, deviceID
 	if err := b.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentCmd); err != nil {
 		return err
 	}
+	// Recheck after the first successful authorization and immediately before
+	// publishing the command. This closes revoke-after-authorize TOCTOU.
+	if err := b.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentCmd); err != nil {
+		return err
+	}
 	// Copy to avoid aliasing the caller's buffer.
 	cp := make([]byte, len(command))
 	copy(cp, command)

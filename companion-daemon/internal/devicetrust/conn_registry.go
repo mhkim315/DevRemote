@@ -31,6 +31,9 @@ func (r *AuthenticatedConnRegistry) Register(deviceID string, deviceEpoch uint64
 	if err := r.authorizer.AuthorizeCommit(deviceID, deviceEpoch, IntentReconnect); err != nil {
 		return err
 	}
+	if err := r.authorizer.AuthorizeCommit(deviceID, deviceEpoch, IntentReconnect); err != nil {
+		return err
+	}
 	r.conns[deviceID] = append(r.conns[deviceID], closer)
 	return nil
 }

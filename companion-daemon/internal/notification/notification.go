@@ -172,6 +172,9 @@ func (s *DeviceStore) bind(deviceID, pushToken string, principalEpoch int64, int
 	if err := s.authorizer.AuthorizeCommit(deviceID, uint64(principalEpoch), intent); err != nil {
 		return err
 	}
+	if err := s.authorizer.AuthorizeCommit(deviceID, uint64(principalEpoch), intent); err != nil {
+		return err
+	}
 	s.tokens[deviceID] = pushToken
 	s.bumpEpochLocked(deviceID)
 	return nil

@@ -348,6 +348,11 @@ func (rt *codexManagedRuntime) deliverResponse(req ApprovalDeliveryRequest, payl
 		rt.respMu.Unlock()
 		return fail(DeliveryStaleRuntime)
 	}
+	if err := rt.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+		delete(rt.respWaiters, pend.idInt)
+		rt.respMu.Unlock()
+		return fail(DeliveryStaleRuntime)
+	}
 	w.state = waiterStateWriteClaimed
 	rt.respMu.Unlock()
 

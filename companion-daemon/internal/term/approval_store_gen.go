@@ -724,6 +724,9 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	if err := s.authorizer.AuthorizeCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim); err != nil {
 		return ClaimResult{Outcome: ClaimStaleEpoch}
 	}
+	if err := s.authorizer.AuthorizeCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim); err != nil {
+		return ClaimResult{Outcome: ClaimStaleEpoch}
+	}
 
 	// Idempotent replay — only after the authority checks above passed.
 	if led, ok := sess.idempotency[req.IdempotencyKey]; ok {
@@ -817,6 +820,9 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) Del
 	}
 	// Approval commit authorization is evaluated by the store while its
 	// mutation lock is held, immediately before changing the accepted state.
+	if err := s.authorizer.AuthorizeCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit); err != nil {
+		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
+	}
 	if err := s.authorizer.AuthorizeCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit); err != nil {
 		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
 	}

@@ -123,18 +123,26 @@ var ErrMutationAuthorityNotReady = errors.New("mutation authority not ready")
 // bypass before the trust root is available.
 type compositionMutationAuthorizer struct {
 	target devicetrust.MutationAuthorizer
+	local  devicetrust.MutationAuthorizer
 }
 
 func newCompositionMutationAuthorizer(target devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
+	return newCompositionMutationAuthorizerWithLocal(target, nil)
+}
+
+func newCompositionMutationAuthorizerWithLocal(target, local devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
 	if target == nil {
 		return nil, ErrMutationAuthorityNotReady
 	}
-	return &compositionMutationAuthorizer{target: target}, nil
+	return &compositionMutationAuthorizer{target: target, local: local}, nil
 }
 
 func (a *compositionMutationAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
 	if a == nil || a.target == nil {
 		return ErrMutationAuthorityNotReady
+	}
+	if deviceID == "" && epoch == 0 && a.local != nil {
+		return a.local.AuthorizeCommit(deviceID, epoch, intent)
 	}
 	return a.target.AuthorizeCommit(deviceID, epoch, intent)
 }
@@ -248,7 +256,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if deps.mutationAuthorizer != nil {
 		mutationTarget = deps.mutationAuthorizer
 	}
-	compositionAuth, authErr := newCompositionMutationAuthorizer(mutationTarget)
+	localIPCAuth := devicetrust.NewInsecureLocalOnlyMutationAuthorizer()
+	compositionAuth, authErr := newCompositionMutationAuthorizerWithLocal(mutationTarget, localIPCAuth)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -1079,7 +1088,10 @@ func (a *App) startIPC() (ipcResource, error) {
 	if a.deps.StartIPC != nil {
 		return a.deps.StartIPC(a.ipcPath, a.telemetry, a.lifecycle)
 	}
-	return term.StartIPCServer(a.ipcPath, a.mutationAuthorizer, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
+	// IPC is a separate 0600 local trust boundary. It never reuses the HTTP
+	// mode's device/epoch authorizer; the managed services accept the explicit
+	// empty-identity local path through their composition authorizer.
+	return term.StartIPCServer(a.ipcPath, devicetrust.NewInsecureLocalOnlyMutationAuthorizer(), a.telemetry, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

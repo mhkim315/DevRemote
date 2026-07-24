@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"devremote/companion-daemon/internal/devicetrust"
+	"devremote/companion-daemon/internal/notification"
 )
 
 // realRevokeBarrierAuthorizer pauses the decisive authorization call. The
@@ -67,6 +68,85 @@ func (a *realRevokeBarrierAuthorizer) revokeAndRelease(t *testing.T, operation f
 	close(a.release)
 	a.mu.Unlock()
 	return <-done
+}
+
+// postAuthRevokeBarrierAuthorizer is the complementary barrier: it delegates
+// to the real registry first, then pauses only after authorization succeeded.
+// Revoke therefore wins the gap between authorization return and sink commit.
+type postAuthRevokeBarrierAuthorizer struct {
+	reg      *devicetrust.DeviceRegistry
+	deviceID string
+
+	mu      sync.Mutex
+	armed   bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (a *postAuthRevokeBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
+	if err := a.reg.AuthorizeCommit(deviceID, epoch, intent); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if a.armed && deviceID == a.deviceID {
+		a.armed = false
+		reached, release := a.reached, a.release
+		close(reached)
+		a.mu.Unlock()
+		<-release
+		return nil
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *postAuthRevokeBarrierAuthorizer) arm() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.reached = make(chan struct{})
+	a.release = make(chan struct{})
+	a.armed = true
+}
+
+func (a *postAuthRevokeBarrierAuthorizer) revokeAndRelease(t *testing.T, operation func() error) error {
+	t.Helper()
+	a.arm()
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	select {
+	case <-a.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mutation did not reach post-authorization barrier")
+	}
+	if err := a.reg.Revoke(a.deviceID); err != nil {
+		t.Fatalf("real DeviceRegistry.Revoke: %v", err)
+	}
+	a.mu.Lock()
+	close(a.release)
+	a.mu.Unlock()
+	return <-done
+}
+
+func (a *postAuthRevokeBarrierAuthorizer) releaseAfterAuthorization(t *testing.T, operation func() error) error {
+	t.Helper()
+	a.arm()
+	done := make(chan error, 1)
+	go func() { done <- operation() }()
+	select {
+	case <-a.reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mutation did not reach post-authorization barrier")
+	}
+	a.mu.Lock()
+	close(a.release)
+	a.mu.Unlock()
+	return <-done
+}
+
+func newPostAuthBarrier(t *testing.T) (*postAuthRevokeBarrierAuthorizer, string, uint64) {
+	t.Helper()
+	pre, deviceID, epoch := newRealRevokeBarrier(t)
+	return &postAuthRevokeBarrierAuthorizer{reg: pre.reg, deviceID: deviceID}, deviceID, epoch
 }
 
 func newRealRevokeBarrier(t *testing.T) (*realRevokeBarrierAuthorizer, string, uint64) {
@@ -158,7 +238,7 @@ func realRequester(deviceID string, epoch uint64) RequesterContext {
 	return RequesterContext{DeviceID: deviceID, DeviceEpoch: epoch, HostID: "host-real", BearerSessionID: "bearer-real", BootID: "boot-real", Permissions: []string{devicetrust.PermTerminalInput}}
 }
 
-func realApprovalClaim(t *testing.T, auth *realRevokeBarrierAuthorizer, deviceID string, epoch uint64) (*AuthoritativeApprovalStore, ClaimRequest) {
+func realApprovalClaim(t *testing.T, auth devicetrust.MutationAuthorizer, deviceID string, epoch uint64) (*AuthoritativeApprovalStore, ClaimRequest) {
 	t.Helper()
 	store, err := NewApprovalStore(auth)
 	if err != nil {
@@ -355,6 +435,13 @@ type barrierCloser struct{}
 
 func (barrierCloser) Close() error { return nil }
 
+type barrierResizer struct{ calls int }
+
+func (r *barrierResizer) Resize(int, int) error {
+	r.calls++
+	return nil
+}
+
 func TestRealRevokeBarrier_Connection(t *testing.T) {
 	auth, deviceID, epoch := newRealRevokeBarrier(t)
 	registry := devicetrust.NewAuthenticatedConnRegistry(auth)
@@ -365,5 +452,360 @@ func TestRealRevokeBarrier_Connection(t *testing.T) {
 	assertRevokeWins(t, err)
 	if got := registry.Count(deviceID); got != 0 {
 		t.Fatalf("connection side effect after revoke: %d connection(s)", got)
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_LifecycleAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			launcher := newFakeAdapter()
+			owned, err := NewOwnedPTYRuntime(auth, launcher, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := owned.Create(context.Background(), SpawnConfig{Name: "post-life-" + tc.name}, "", "post", deviceID, epoch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				owned.mu.Lock()
+				entry := owned.entries[id]
+				owned.mu.Unlock()
+				if entry != nil && entry.handle != nil {
+					_ = entry.handle.Kill()
+				}
+			})
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err = barrierRun(t, func() error {
+				_, err := owned.Kill(context.Background(), id, deviceID, epoch)
+				return err
+			})
+			if tc.win {
+				if err != nil {
+					t.Fatalf("mutation-wins kill: %v", err)
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed kill: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if _, _, terminated := launcher.snapshot(); len(terminated) != 0 {
+				t.Fatalf("lifecycle side effect after revoke: terminated=%v", terminated)
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_PromptAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			provider := &interactiveAppServer{threadID: "post-prompt-" + tc.name}
+			managed, launcher := newInteractiveServiceWithAuthorizer(t, provider, auth)
+			id, err := managed.CreateAttached("", deviceID, epoch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				for _, proc := range launcher.procs {
+					_ = proc.Kill()
+				}
+			})
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err = barrierRun(t, func() error {
+				return managed.SubmitPrompt(id, 1, "post-barrier", deviceID, epoch)
+			})
+			if tc.win {
+				if err != nil {
+					t.Fatalf("mutation-wins prompt: %v", err)
+				}
+				deadline := time.Now().Add(time.Second)
+				for provider.turnCount() == 0 && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+				if got := provider.turnCount(); got == 0 {
+					t.Fatal("committed prompt produced no provider turn")
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed prompt: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if got := provider.turnCount(); got != 0 {
+				t.Fatalf("provider turn after revoke: %d", got)
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_ApprovalAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			store, req := realApprovalClaim(t, auth, deviceID, epoch)
+			result := make(chan ClaimResult, 1)
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err := barrierRun(t, func() error {
+				result <- store.ClaimForExecution(req)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim := <-result
+			if tc.win {
+				if claim.Outcome != ClaimGranted {
+					t.Fatalf("mutation-wins claim=%s", claim.Outcome)
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed claim: %v", err)
+				}
+				return
+			}
+			if claim.Outcome != ClaimStaleEpoch {
+				t.Fatalf("revoke-wins claim=%s, want stale_epoch", claim.Outcome)
+			}
+			if snap, ok := store.LookupRecord(req.SessionID, req.ApprovalID); !ok || snap.State != ApprovalPending {
+				t.Fatalf("approval side effect after revoke: ok=%v state=%s", ok, snap.State)
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_CommandAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			broker := NewCommandBroker(auth)
+			var err error
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err = barrierRun(t, func() error {
+				return broker.PutAuthorized("post-command", []byte("run"), deviceID, epoch)
+			})
+			if tc.win {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := broker.Take("post-command"); string(got) != "run" {
+					t.Fatalf("committed command=%q", got)
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed command: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if got := broker.Take("post-command"); got != nil {
+				t.Fatalf("command side effect after revoke: %q", got)
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_InputAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			var out bytes.Buffer
+			transport := newTerminalTransport("controlled_pty:post-input", 1, &out, nil, nil, auth)
+			var written int
+			var err error
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err = barrierRun(t, func() error {
+				written, err = transport.WriteInput([]byte("post-input"), deviceID, epoch)
+				return err
+			})
+			if tc.win {
+				if err != nil || written != len("post-input") || out.String() != "post-input" {
+					t.Fatalf("mutation-wins input=(%d,%v,%q)", written, err, out.String())
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed input: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if written != 0 || out.Len() != 0 {
+				t.Fatalf("input side effect after revoke=(%d,%q)", written, out.String())
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_TicketAndMutationWins(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			store := devicetrust.NewWSTicketStore(auth)
+			principal := &devicetrust.Principal{DeviceID: deviceID, DeviceEpoch: int64(epoch), HostID: "post-host", BearerSessionID: "post-bearer", BearerExpires: time.Now().Add(time.Minute)}
+			var raw string
+			var issueErr error
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			issueErr = barrierRun(t, func() error {
+				raw, _, issueErr = store.Issue(principal, "post-host", "controlled_pty:post-ticket")
+				return issueErr
+			})
+			if tc.win {
+				if issueErr != nil || raw == "" || store.Count() != 1 {
+					t.Fatalf("mutation-wins ticket=(%q,%v,count=%d)", raw, issueErr, store.Count())
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed ticket: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, issueErr)
+			if store.Count() != 0 {
+				t.Fatalf("ticket side effect after revoke: %d", store.Count())
+			}
+		})
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_ConnectionAndNotification(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			connections := devicetrust.NewAuthenticatedConnRegistry(auth)
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err := barrierRun(t, func() error {
+				return connections.Register(deviceID, epoch, barrierCloser{})
+			})
+			if tc.win {
+				if err != nil || connections.Count(deviceID) != 1 {
+					t.Fatalf("mutation-wins connection=(%v,count=%d)", err, connections.Count(deviceID))
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed connection: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if connections.Count(deviceID) != 0 {
+				t.Fatalf("connection side effect after revoke: %d", connections.Count(deviceID))
+			}
+		})
+	}
+
+	// Notification registration is a separate sink using the same real
+	// registry barrier, so push/token binding cannot bypass the post-auth check.
+	auth, deviceID, epoch := newPostAuthBarrier(t)
+	devices := notification.NewDeviceStore(auth)
+	err := auth.revokeAndRelease(t, func() error { return devices.Bind(deviceID, "push", int64(epoch)) })
+	assertRevokeWins(t, err)
+	if got := devices.Token(deviceID); got != "" {
+		t.Fatalf("notification side effect after revoke: %q", got)
+	}
+
+	auth, deviceID, epoch = newPostAuthBarrier(t)
+	devices = notification.NewDeviceStore(auth)
+	if err := auth.releaseAfterAuthorization(t, func() error { return devices.Bind(deviceID, "push-wins", int64(epoch)) }); err != nil {
+		t.Fatalf("mutation-wins notification bind: %v", err)
+	}
+	if got := devices.Token(deviceID); got != "push-wins" {
+		t.Fatalf("committed notification token=%q", got)
+	}
+	if err := auth.reg.Revoke(deviceID); err != nil {
+		t.Fatalf("revoke after committed notification bind: %v", err)
+	}
+}
+
+func TestPostAuthorizationRevokeBarrier_Resize(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		win  bool
+	}{
+		{name: "revoke-wins"},
+		{name: "mutation-wins", win: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth, deviceID, epoch := newPostAuthBarrier(t)
+			resizer := &barrierResizer{}
+			transport := newTerminalTransport("controlled_pty:post-resize", 1, nil, resizer, nil, auth)
+			barrierRun := auth.revokeAndRelease
+			if tc.win {
+				barrierRun = auth.releaseAfterAuthorization
+			}
+			err := barrierRun(t, func() error { return transport.Resize(24, 80, deviceID, epoch) })
+			if tc.win {
+				if err != nil || resizer.calls != 1 {
+					t.Fatalf("mutation-wins resize=(%v,calls=%d)", err, resizer.calls)
+				}
+				if err := auth.reg.Revoke(deviceID); err != nil {
+					t.Fatalf("revoke after committed resize: %v", err)
+				}
+				return
+			}
+			assertRevokeWins(t, err)
+			if resizer.calls != 0 {
+				t.Fatalf("resize side effect after revoke: %d", resizer.calls)
+			}
+		})
 	}
 }

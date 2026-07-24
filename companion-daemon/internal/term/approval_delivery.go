@@ -519,6 +519,9 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	if err := g.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
 		return DeliveryReceipt{}, "", false
 	}
+	if err := g.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+		return DeliveryReceipt{}, "", false
+	}
 
 	// R8-A: canonical metadata validation — every variable-length field, digest
 	// format, token encoding, and ID syntax is enforced before the gate retains

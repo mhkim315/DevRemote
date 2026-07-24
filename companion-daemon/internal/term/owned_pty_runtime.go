@@ -234,6 +234,10 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 		l.Unlock()
 		return LifecycleResult{}, err
 	}
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+		l.Unlock()
+		return LifecycleResult{}, err
+	}
 	var proceed, found, stale bool
 	var state LifecycleState
 	var h PTYHandle
@@ -338,6 +342,10 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	l := o.lockFor(id)
 	l.Lock()
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+		l.Unlock()
+		return LifecycleResult{}, err
+	}
 	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
 		l.Unlock()
 		return LifecycleResult{}, err

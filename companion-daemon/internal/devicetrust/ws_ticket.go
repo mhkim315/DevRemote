@@ -104,6 +104,9 @@ func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket
 	if err := s.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect); err != nil {
 		return "", time.Time{}, err
 	}
+	if err := s.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect); err != nil {
+		return "", time.Time{}, err
+	}
 	// Capacity check and insertion are one atomic operation. Expired entries
 	// release both global and per-device capacity before the check.
 	s.purgeExpiredLocked(now)
@@ -186,6 +189,11 @@ func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionI
 		return nil
 	}
 	if s.authorizer == nil || s.authorizer.AuthorizeCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect) != nil {
+		t.Consumed = true
+		delete(s.tickets, digest)
+		return nil
+	}
+	if s.authorizer.AuthorizeCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect) != nil {
 		t.Consumed = true
 		delete(s.tickets, digest)
 		return nil
