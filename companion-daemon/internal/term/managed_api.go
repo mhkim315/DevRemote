@@ -206,11 +206,17 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 	// SubmitPrompt reserves the active turn and writes to the provider. The
 	// request principal is captured now and re-validated inside the provider lock.
 	p := devicetrust.PrincipalFromContext(r.Context())
+	var deviceID string
+	var deviceEpoch uint64
+	if p != nil {
+		deviceID = p.DeviceID
+		deviceEpoch = uint64(p.DeviceEpoch)
+	}
 	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
 		if h.DeviceRegistry == nil {
 			return nil
 		}
-		return h.DeviceRegistry.CommitEpoch(&devicetrust.EpochToken{DeviceID: p.DeviceID, Epoch: uint64(p.DeviceEpoch)})
+		return h.DeviceRegistry.CommitEpoch(&devicetrust.EpochToken{DeviceID: deviceID, Epoch: deviceEpoch})
 	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
@@ -249,7 +255,13 @@ func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request
 	// Stop/kill/delete all mutate provider-owned session state. Recheck after
 	// decoding and immediately before dispatching the selected operation.
 	p := devicetrust.PrincipalFromContext(r.Context())
-	if err := op(id, req.Epoch, p.DeviceID, uint64(p.DeviceEpoch)); err != nil {
+	var deviceID string
+	var deviceEpoch uint64
+	if p != nil {
+		deviceID = p.DeviceID
+		deviceEpoch = uint64(p.DeviceEpoch)
+	}
+	if err := op(id, req.Epoch, deviceID, deviceEpoch); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound
@@ -314,7 +326,13 @@ func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.R
 	}
 	id := r.PathValue("id")
 	p := devicetrust.PrincipalFromContext(r.Context())
-	if err := op(id, req.Epoch, p.DeviceID, uint64(p.DeviceEpoch)); err != nil {
+	var deviceID string
+	var deviceEpoch uint64
+	if p != nil {
+		deviceID = p.DeviceID
+		deviceEpoch = uint64(p.DeviceEpoch)
+	}
+	if err := op(id, req.Epoch, deviceID, deviceEpoch); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
 			status = http.StatusNotFound

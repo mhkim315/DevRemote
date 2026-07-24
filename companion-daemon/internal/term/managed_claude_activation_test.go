@@ -1252,7 +1252,7 @@ func TestClaudeResume_CertificationRecordedPerIncarnation(t *testing.T) {
 func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		action func(*ManagedClaudeService, string, int64) error
+		action func(*ManagedClaudeService, string, int64, string, uint64) error
 	}{
 		{name: "stop", action: (*ManagedClaudeService).Stop},
 		{name: "kill", action: (*ManagedClaudeService).Kill},
@@ -1319,7 +1319,7 @@ func TestClaudeResume_StopKillTerminalIntentNeverRestoresOriginal(t *testing.T) 
 
 			// Exact problematic order: lifecycle termination completes first;
 			// delivery's deferred cleanup then observes the exited resume.
-			if err := tc.action(svc, id, resumed.epoch); err != nil {
+			if err := tc.action(svc, id, resumed.epoch, "", 0); err != nil {
 				t.Fatal(err)
 			}
 			svc.finishApprovalResume(resumed)

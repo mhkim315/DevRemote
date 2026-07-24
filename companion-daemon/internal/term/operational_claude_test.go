@@ -55,7 +55,7 @@ func TestManagedClaudeOperationalHooksPostCommitAndRedacted(t *testing.T) {
 	if !ok {
 		t.Fatal("registry record missing")
 	}
-	if err := service.Stop(sessionID, current.Epoch); err != nil {
+	if err := service.Stop(sessionID, current.Epoch, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	events := waitOperationalKinds(t, sink, OperationalProviderInvocationFinished)
@@ -195,7 +195,7 @@ func TestManagedClaudeOperationalResolvedAndFinishedAreRedactedAndPanicIsolated(
 	if !ok {
 		t.Fatal("resumed registry record missing")
 	}
-	if err := service.Stop(sessionID, current.Epoch); err != nil {
+	if err := service.Stop(sessionID, current.Epoch, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, event := range events {
@@ -263,7 +263,7 @@ func TestManagedClaudeOperationalSinkPanicCannotChangeLifecycle(t *testing.T) {
 	if _, ok := service.Registry().Get(sessionID); !ok {
 		t.Fatal("registered session missing after sink panic")
 	}
-	if err := service.Stop(sessionID, 1); err != nil {
+	if err := service.Stop(sessionID, 1, "", 0); err != nil {
 		t.Fatalf("stop changed by sink panic: %v", err)
 	}
 }
