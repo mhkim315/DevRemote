@@ -49,6 +49,11 @@ type ManagedRuntimeCatalog interface {
 	// adapter. The returned capabilities are authoritative and never depend
 	// on legacy discovery or observer evidence.
 	ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string)
+
+	// ManagedSurfaceCapabilities returns the DS-UI3 surface capability
+	// fields for a managed adapter. These replace adapter-prefix routing
+	// on the mobile side.
+	ManagedSurfaceCapabilities(adapter string) (terminalSurface, transcriptSurface, structuredEvidenceClass string)
 }
 
 // managedRuntimeCatalog implements ManagedRuntimeCatalog.
@@ -296,9 +301,14 @@ func (c *managedRuntimeCatalog) ManagedAdapterPrefixes() []string {
 // on legacy discovery or observer evidence.
 func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps, adapterCaps []string) {
 	switch adapter {
-	case codexAppServerAdapter, claudeHeadlessAdapter:
+	case codexAppServerAdapter:
+		// DS-UI3: Codex is FALLBACK — headless managed Transcript only, no Terminal.
 		return []string{"live_stream", "history"},
 			[]string{"live_stream", "history", "process"}
+	case claudeHeadlessAdapter:
+		// DS-UI3: Claude is DUAL_SUPPORTED — Terminal + Transcript dual surface.
+		return []string{"live_stream", "history"},
+			[]string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input", "process"}
 	case "controlled_pty":
 		// BUG-006B: controlled_pty ("shell" profile) is a StreamOpener
 		// with a live WebSocket terminal. Must advertise liveTerminal so
@@ -308,6 +318,38 @@ func (c *managedRuntimeCatalog) ManagedCapabilities(adapter string) (sessionCaps
 	default:
 		return nil, nil
 	}
+}
+
+// ManagedSurfaceCapabilities returns the DS-UI3 surface capability fields for
+// a managed adapter. These replace adapter-prefix routing on the mobile side.
+// The vocabulary is frozen per BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md §3.3.
+//
+// Provider disposition (DS-CX1 / DS-CL1):
+//
+//	codex_app_server → FALLBACK: headless Transcript only, no Terminal
+//	claude_headless  → DUAL_SUPPORTED: Terminal (primary) + Transcript (degraded/partial)
+//	controlled_pty   → Terminal only, byte-stream Transcript suppressed after input
+func (c *managedRuntimeCatalog) ManagedSurfaceCapabilities(adapter string) (terminalSurface, transcriptSurface, structuredEvidenceClass string) {
+	switch adapter {
+	case codexAppServerAdapter:
+		// DS-CX1 FALLBACK: Codex managed is headless-only.
+		return "unsupported", "healthy", "provider_native_authoritative"
+	case claudeHeadlessAdapter:
+		// DS-CL1 DUAL_SUPPORTED: Claude gets Terminal (primary) + partial Transcript.
+		return "available", "degraded", "provider_side_evidence_partial"
+	case "controlled_pty":
+		// Interactive PTY: Terminal primary, Transcript suppressed after input.
+		return "available", "healthy", "none"
+	default:
+		return "unsupported", "unsupported", "none"
+	}
+}
+
+// surfaceCapabilitiesForAdapter is the standalone form used by telemetry merge
+// paths that don't have a catalog reference.
+func surfaceCapabilitiesForAdapter(adapter string) (terminalSurface, transcriptSurface, structuredEvidenceClass string) {
+	var c managedRuntimeCatalog
+	return c.ManagedSurfaceCapabilities(adapter)
 }
 
 // appendCatalogRows appends managed-session rows built from the catalog
@@ -384,19 +426,25 @@ func appendCatalogRows(snapshot []SessionTelemetry, catalog ManagedRuntimeCatalo
 		// PA4.1 R2: capabilities from catalog contract, not hard-coded.
 		sessCaps, adapterCaps := catalog.ManagedCapabilities(adapter)
 
+		// DS-UI3: surface capabilities from provider disposition.
+		termSurface, transSurface, evClass := catalog.ManagedSurfaceCapabilities(adapter)
+
 		out = append(out, SessionTelemetry{
-			ID:                  rec.SessionID,
-			DisplayID:           strings.TrimPrefix(rec.SessionID, adapter+":"),
-			State:               string(rec.NativeStatus),
-			Adapter:             adapter,
-			Runner:              rec.Provider,
-			RunnerColor:         runnerColor,
-			AgentKind:           rec.Provider,
-			AgentStatus:         string(rec.NativeStatus),
-			LifecycleState:      lifecycleState,
-			Capabilities:        sessCaps,
-			AdapterCapabilities: adapterCaps,
-			Approvals:           safe,
+			ID:                      rec.SessionID,
+			DisplayID:               strings.TrimPrefix(rec.SessionID, adapter+":"),
+			State:                   string(rec.NativeStatus),
+			Adapter:                 adapter,
+			Runner:                  rec.Provider,
+			RunnerColor:             runnerColor,
+			AgentKind:               rec.Provider,
+			AgentStatus:             string(rec.NativeStatus),
+			LifecycleState:          lifecycleState,
+			Capabilities:            sessCaps,
+			AdapterCapabilities:     adapterCaps,
+			Approvals:               safe,
+			TerminalSurface:         termSurface,
+			TranscriptSurface:       transSurface,
+			StructuredEvidenceClass: evClass,
 		})
 	}
 	return out

@@ -84,6 +84,9 @@ func (c *fakeManagedCatalog) ManagedAdapterPrefixes() []string    { return nil }
 func (c *fakeManagedCatalog) ManagedCapabilities(string) ([]string, []string) {
 	return nil, nil
 }
+func (c *fakeManagedCatalog) ManagedSurfaceCapabilities(adapter string) (string, string, string) {
+	return surfaceCapabilitiesForAdapter(adapter)
+}
 
 func pa2cDispatcher(t *testing.T) (*LifecycleService, *fakeProviderOwner, *fakeProviderOwner, *fakeManagedCatalog) {
 	t.Helper()

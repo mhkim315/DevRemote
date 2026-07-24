@@ -414,8 +414,6 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		if err := managedClaude.SetApprovalStore(approvals); err != nil {
 			return nil, fmt.Errorf("managed claude approval store: %w", err)
 		}
-		// R4: wire Codex managed events into the common Transcript projection.
-		managed.SetTranscriptService(transcriptSvc)
 	}
 
 	// DS-CL2: interactive Claude host (PTY + hooks + JSONL).

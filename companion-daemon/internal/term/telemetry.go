@@ -43,6 +43,14 @@ type SessionTelemetry struct {
 	// SEPARATE from the daemon-authoritative lifecycle (LifecycleState) and from
 	// telemetry poll health (Stale). It never enables lifecycle/approval actions.
 	AgentActivity *AgentActivityDTO `json:"agentActivity,omitempty"`
+	// ── DS-UI3: capability-driven surface routing ──
+	//
+	// These fields replace adapter-prefix surface selection. The server is the
+	// sole authority; mobile must not infer surface from adapter labels.
+	// Closed vocabularies per BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md §3.3.
+	TerminalSurface        string `json:"terminalSurface,omitempty"`        // available | temporarily_unavailable | unsupported
+	TranscriptSurface      string `json:"transcriptSurface,omitempty"`      // healthy | degraded | temporarily_unavailable | unsupported
+	StructuredEvidenceClass string `json:"structuredEvidenceClass,omitempty"` // provider_native_authoritative | provider_side_evidence_partial | none
 	// Agent events flow through the existing Events field via
 	// PB.2b: Managed ingestion → Transcript → Snapshot.
 	Stale         bool      `json:"stale,omitempty"`
@@ -93,6 +101,10 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 		if e, ok := catalog.Get(snapshot[i].ID); ok {
 			snapshot[i].LifecycleState = string(e.State)
 			snapshot[i].AdapterCapabilities = []string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"}
+			// DS-UI3: surface capabilities for controlled_pty rows.
+			snapshot[i].TerminalSurface = "available"
+			snapshot[i].TranscriptSurface = "healthy"
+			snapshot[i].StructuredEvidenceClass = "none"
 		}
 	}
 	// (2) all controlled-PTY rows are owned by the runtime, including live
@@ -102,12 +114,15 @@ func mergeLifecycleState(snapshot []SessionTelemetry, lifecycle *LifecycleServic
 			continue // live row already present and annotated
 		}
 		snapshot = append(snapshot, SessionTelemetry{
-			ID:                  e.ID,
-			DisplayID:           sessionid.ParseSessionID(e.ID).LocalID,
-			LifecycleState:      string(e.State),
-			Adapter:             e.Adapter,
-			Capabilities:        []string{"live_stream", "history"},
-			AdapterCapabilities: []string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"},
+			ID:                      e.ID,
+			DisplayID:               sessionid.ParseSessionID(e.ID).LocalID,
+			LifecycleState:          string(e.State),
+			Adapter:                 e.Adapter,
+			Capabilities:            []string{"live_stream", "history"},
+			AdapterCapabilities:     []string{"liveTerminal", "live_stream", "history", "managedLifecycle", "input"},
+			TerminalSurface:         "available",
+			TranscriptSurface:       "healthy",
+			StructuredEvidenceClass: "none",
 		})
 	}
 	sortTelemetry(snapshot)
