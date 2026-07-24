@@ -107,6 +107,18 @@ func (l *scriptedLauncher) Spawn(_ context.Context, _ SpawnConfig) (LaunchResult
 	}, nil
 }
 
+// ── Gated launcher (blocks at Spawn via callback) ──
+
+type gatedLauncher struct {
+	inner ManagedPTYLauncherV1
+	gate  func()
+}
+
+func (l *gatedLauncher) Spawn(ctx context.Context, cfg SpawnConfig) (LaunchResult, error) {
+	l.gate()
+	return l.inner.Spawn(ctx, cfg)
+}
+
 // ── Tests ──
 
 func TestOwnedCreate_StaleCreateCannotFinalizeWinner(t *testing.T) {
@@ -181,49 +193,97 @@ func TestOwnedCreate_StaleCreateCannotFinalizeWinner(t *testing.T) {
 }
 
 func TestOwnedCreate_OlderFailureDoesNotEraseNewerPending(t *testing.T) {
-	auth := newBarrierAuthorizer()
+	// Per-goroutine release channels: slow runs first (fails), fast runs second.
+	slowReleaseC := make(chan struct{})
+	fastReleaseC := make(chan struct{})
+	slowBlocked := make(chan struct{})
+	fastBlocked := make(chan struct{})
+	slowDone := make(chan struct{})
 
 	fastReader := newChannelBlockingReader()
 	defer fastReader.Close()
 	fastHandle := &v1TestHandle{Reader: fastReader}
 
-	// results[0] = FAST create (spawns first) → success
-	// results[1] = SLOW create (spawns second) → failure
-	launcher := &scriptedLauncher{results: []scriptedResult{
-		{handle: fastHandle},
+	// Scripted: call 0 = SLOW (error), call 1 = FAST (success).
+	inner := &scriptedLauncher{results: []scriptedResult{
 		{err: fmt.Errorf("injected spawn failure")},
+		{handle: fastHandle},
 	}}
 
-	o, err := NewOwnedPTYRuntime(auth, launcher, nil)
+	var mu sync.Mutex
+	callCount := 0
+	gatedLauncher := &gatedLauncher{
+		inner: inner,
+		gate: func() {
+			mu.Lock()
+			n := callCount
+			callCount++
+			mu.Unlock()
+			if n == 0 {
+				close(slowBlocked)
+				<-slowReleaseC
+			} else {
+				close(fastBlocked)
+				<-fastReleaseC
+			}
+		},
+	}
+
+	o, err := NewOwnedPTYRuntime(&barrierAuthorizer{}, gatedLauncher, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var wg sync.WaitGroup
+	// Slow create: AuthorizeAndCommit (gen 1) → Spawn → blocked at gate.
 	var slowErr error
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer close(slowDone)
 		_, slowErr = o.Create(context.Background(), SpawnConfig{Name: "nf", Executable: "true"}, "", "test", "test-device", 0)
 	}()
 
-	<-auth.blockCh
+	<-slowBlocked
 
-	id, err := o.Create(context.Background(), SpawnConfig{Name: "nf", Executable: "true"}, "", "test", "test-device", 0)
-	if err != nil {
-		close(auth.releaseC)
-		wg.Wait()
-		t.Fatalf("fast create: %v", err)
+	// Fast create: AuthorizeAndCommit (gen 2) → Spawn → blocked at gate.
+	var fastErr error
+	var id string
+	fastDone := make(chan struct{})
+	go func() {
+		defer close(fastDone)
+		id, fastErr = o.Create(context.Background(), SpawnConfig{Name: "nf", Executable: "true"}, "", "test", "test-device", 0)
+	}()
+	<-fastBlocked
+
+	// Both blocked. Fast's pending must still exist.
+	o.mu.Lock()
+	pg, ok := o.pending["controlled_pty:nf"]
+	o.mu.Unlock()
+	if !ok || pg != 2 {
+		t.Fatalf("pending[nf] = %d ok=%v, want gen 2 still pending", pg, ok)
 	}
 
-	close(auth.releaseC)
-	wg.Wait()
+	// Release SLOW → Spawn fails → slowDone closed.
+	close(slowReleaseC)
+	<-slowDone
 
-	// Slow create must have failed with injected error.
 	if slowErr == nil || slowErr.Error() != "injected spawn failure" {
 		t.Fatalf("slow create error = %v, want injected spawn failure", slowErr)
 	}
-	// Fast create's entry must still exist.
+
+	// Fast's pending must STILL exist (slow failure didn't erase it).
+	o.mu.Lock()
+	pg, ok = o.pending["controlled_pty:nf"]
+	o.mu.Unlock()
+	if !ok || pg != 2 {
+		t.Fatalf("pending[nf] after slow failure = %d ok=%v, want gen 2 still pending", pg, ok)
+	}
+
+	// Release FAST → Spawn succeeds → publish → fastDone closed.
+	close(fastReleaseC)
+	<-fastDone
+
+	if fastErr != nil {
+		t.Fatalf("fast create: %v", fastErr)
+	}
 	if _, ok := o.Get(id); !ok {
 		t.Fatalf("fast create entry missing for id %s", id)
 	}
