@@ -169,15 +169,22 @@ describe('pairThenConnect ordering', () => {
     expect(order).not.toContain('reject');
   });
 
-  // BUG-004: connect rejecting does NOT call onReject — scanner stays locked.
-  it('connect rejecting after a successful install → no onReject (scanner stays locked)', async () => {
+  // BUG-006: connect rejecting retries 3 times then throws. onReject is NEVER
+  // called — scanner stays locked after all retries fail.
+  it('connect rejecting after a successful install → retries 3x, throws, no onReject', async () => {
     const order: string[] = [];
-    await pairThenConnect({
-      onPaired: async () => { order.push('onPaired'); return true; },
-      connect: async () => { order.push('connect'); throw new Error('probe failed'); },
-      onReject: () => { order.push('reject'); },
-    });
-    expect(order).toEqual(['onPaired', 'connect']);
+    let thrown = false;
+    try {
+      await pairThenConnect({
+        onPaired: async () => { order.push('onPaired'); return true; },
+        connect: async () => { order.push('connect'); throw new Error('probe failed'); },
+        onReject: () => { order.push('reject'); },
+      });
+    } catch {
+      thrown = true;
+    }
+    expect(thrown).toBe(true);
+    expect(order).toEqual(['onPaired', 'connect', 'connect', 'connect']);
     expect(order).not.toContain('reject');
   });
 });
