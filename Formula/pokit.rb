@@ -1,9 +1,9 @@
 class Pokit < Formula
   desc "Accountless local-control CLI and daemon"
   homepage "https://github.com/mhkim315/DevRemote"
-  url "https://github.com/mhkim315/DevRemote/archive/363ec91fd0dc5b0d52190630531af1a1a2d5d380.tar.gz"
-  version "0.0.1-dev-build9"
-  sha256 "35d00d8341a6aa02c3e5700e5faee1f95cd146fcdfab96527dce8e75dcd1d204"
+  url "https://github.com/mhkim315/DevRemote/archive/5632868c640fc7249414440b9d30102d6633dab1.tar.gz"
+  version "0.0.1-dev-build10"
+  sha256 "REPLACE_WITH_SHA256_OF_5632868c6_ARCHIVE"
   license "MIT"
 
   depends_on "go" => :build
@@ -11,7 +11,7 @@ class Pokit < Formula
   on_macos do
     def install
       build_time = Time.now.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-      ldflags = "-X main.cliVersion=#{version} -X main.cliGitSHA=363ec91fd0dc5b0d52190630531af1a1a2d5d380 -X main.cliBuildTime=#{build_time}"
+      ldflags = "-X main.cliVersion=#{version} -X main.cliGitSHA=5632868c640fc7249414440b9d30102d6633dab1 -X main.cliBuildTime=#{build_time}"
       cd "companion-daemon" do
         system "go", "build", "-trimpath", "-ldflags", ldflags, "-o", bin/"pokit", "./cmd/devremote"
       end
