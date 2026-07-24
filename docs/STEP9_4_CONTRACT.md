@@ -35,15 +35,6 @@ seam; it does not authorize a second pairing authority, alternate device
 registration, or weakening of ChallengeStore/DeviceSessionManager/
 DeviceRegistry/HostIdentity ownership.
 
-**Amendment 1 (9.4-B QR mediation):** `internal/devicetrust` PairingRequest may
-add optional QR metadata fields (host ID, daemon boot ID, challenge ID,
-expires-at). These fields are verified by the QR bridge before the existing
-pairing protocol proceeds. PairingHost must reject a candidate whose QR
-metadata does not match the bridge's stored binding. This is a narrow mediation
-seam; it does not authorize a second pairing authority, alternate device
-registration, or weakening of ChallengeStore/DeviceSessionManager/
-DeviceRegistry/HostIdentity ownership.
-
 ## 2. 9.4-A — macOS installation and bootstrap
 
 ### 2.1 Distribution path
