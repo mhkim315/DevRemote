@@ -80,8 +80,8 @@ func TestDevicesIPC_RevokeEndToEnd(t *testing.T) {
 
 	bootID, _ := devicetrust.NewBootID()
 	mgr := devicetrust.NewPermissiveSessionManager(bootID, time.Minute)
-	tickets := devicetrust.NewWSTicketStore()
-	connReg := devicetrust.NewAuthenticatedConnRegistry()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
+	connReg := devicetrust.NewAuthenticatedConnRegistry(testMutationAuthorizer{})
 	// Replicate the production onRevoke wiring (app.go `cb`).
 	mgr.SetOnRevoke(func(deviceID string) {
 		connReg.CloseDevice(deviceID)
@@ -98,7 +98,7 @@ func TestDevicesIPC_RevokeEndToEnd(t *testing.T) {
 		t.Fatal("bearer not authenticated pre-revoke")
 	}
 	closed := make(chan struct{})
-	connReg.Register(dev.DeviceID, closerFunc(func() error { close(closed); return nil }))
+	_ = connReg.Register(dev.DeviceID, 0, closerFunc(func() error { close(closed); return nil }))
 	if _, _, err := tickets.Issue(p, "host", "session"); err != nil {
 		t.Fatalf("issue ticket: %v", err)
 	}

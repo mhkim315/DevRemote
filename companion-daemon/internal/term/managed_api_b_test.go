@@ -40,7 +40,7 @@ func TestManagedEventsAPI_SnapshotCursorOrderingIdempotent(t *testing.T) {
 	managed, _ := newInteractiveService(t, app)
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
-	h := &Handlers{Managed: managed}
+	h := &Handlers{Managed: managed, authorizer: testMutationAuthorizer{}}
 
 	if err := managed.SubmitPrompt(id, 1, "hi", "test-device", 0); err != nil {
 		t.Fatalf("prompt: %v", err)
@@ -107,7 +107,7 @@ func TestManagedEventsAPI_FailClosedBindings(t *testing.T) {
 	managed, _ := newInteractiveService(t, app)
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
-	h := &Handlers{Managed: managed}
+	h := &Handlers{Managed: managed, authorizer: testMutationAuthorizer{}}
 
 	if code, _ := getEvents(t, h, "codex_app_server:nope", "epoch=1&cursor=0"); code != 404 {
 		t.Fatalf("wrong session code = %d", code)
@@ -190,7 +190,7 @@ func TestManagedPromptAPI_FailClosed(t *testing.T) {
 	managed, _ := newInteractiveService(t, app)
 	resp := ipcCreateRoundTrip(t, managed, sp05InteractiveRequest())
 	id := resp["id"]
-	h := &Handlers{Managed: managed}
+	h := &Handlers{Managed: managed, authorizer: testMutationAuthorizer{}}
 
 	if code, body := postPrompt(t, h, id, `{"epoch":1,"text":"go"}`); code != 200 {
 		t.Fatalf("accepted prompt code=%d body=%s", code, body)

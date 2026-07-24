@@ -224,7 +224,7 @@ func TestTERM_G1_ResizeReflectedThroughChain(t *testing.T) {
 	}
 
 	// Resize through the transport (generation-gated).
-	if err := transport.Resize(42, 132); err != nil {
+	if err := transport.Resize(42, 132, "test", 0); err != nil {
 		t.Fatalf("transport.Resize: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestTERM_G1_StaleGenerationCannotObserve(t *testing.T) {
 	gen1 := transport1.generation
 
 	// Resize gen-1 to a known non-default size.
-	if err := transport1.Resize(35, 110); err != nil {
+	if err := transport1.Resize(35, 110, "test", 0); err != nil {
 		t.Fatalf("gen-1 resize: %v", err)
 	}
 
@@ -306,7 +306,7 @@ func TestTERM_G1_StaleResizeIsNoOp(t *testing.T) {
 	transport2, _ := owned.Transport(id)
 
 	// Resize through the stale transport — must be a silent no-op.
-	if err := transport1.Resize(99, 999); err != nil {
+	if err := transport1.Resize(99, 999, "test", 0); err != nil {
 		t.Errorf("stale resize returned error: %v", err)
 	}
 
@@ -385,7 +385,7 @@ func TestTERM_G1_PTYReadDoesNotResolveWrongGeneration(t *testing.T) {
 
 	// Gen-1 PTY writes something recognizable.
 	transport1, _ := owned.Transport(id)
-	transport1.WriteInput([]byte("gen1-marker\n"))
+	transport1.WriteInput([]byte("gen1-marker\n"), "test", 0)
 
 	// Replace with gen-2.
 	spawnG1(t, owned, "g1-distinct", "sleep", "1")

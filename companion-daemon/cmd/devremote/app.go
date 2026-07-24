@@ -250,7 +250,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 
 	cmds := deps.Cmds
 	if cmds == nil {
-		cmds = term.NewCommandBroker()
+		cmds = term.NewCommandBroker(authorizer)
 	}
 	// Phase A9: approval tracking.
 	approvals, err := term.NewApprovalStore(authorizer)
@@ -414,15 +414,15 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if deps.WSTicketConfig != nil {
 		ticketCfg = *deps.WSTicketConfig
 	}
-	wsTickets := devicetrust.NewWSTicketStoreWithConfig(ticketCfg)
-	connRegistry := devicetrust.NewAuthenticatedConnRegistry()
+	wsTickets := devicetrust.NewWSTicketStoreWithConfig(authorizer, ticketCfg)
+	connRegistry := devicetrust.NewAuthenticatedConnRegistry(authorizer)
 	// M2.5-5: resolve the audit log (nil ⇒ no-op) so every emit point is safe.
 	audit := deps.Audit
 	if audit == nil {
 		audit = devicetrust.NopAuditLog{}
 	}
 	// N1 device store: created early so revoke callbacks can clear tokens.
-	n1Devices := notification.NewDeviceStore()
+	n1Devices := notification.NewDeviceStore(authorizer)
 
 	// Wire session replacement → connection invalidation.
 	// N1 revoke is added after n1Notifier is constructed (below).
@@ -587,18 +587,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 			http.Error(w, "deviceId is required", http.StatusBadRequest)
 			return
 		}
-		if principal != nil {
-			// Remote mode: epoch-bound registration.
-			if err := n1Devices.Bind(deviceID, token, deviceEpoch); err != nil {
-				http.Error(w, err.Error(), http.StatusConflict)
-				return
-			}
-		} else {
-			// Insecure-local mode: direct registration without authority.
-			n1Devices.BindLocal(deviceID, token)
-		}
-		if n1Notifier != nil {
-			n1Notifier.BindDevice(deviceID)
+		if err := n1Devices.RegisterPush(deviceID, token, deviceEpoch); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}
@@ -866,11 +857,6 @@ func (a *App) Run(ctx context.Context) error {
 	if a.sessionMgr != nil && a.deviceRegistry != nil {
 		a.sessionMgr.GetAuth = a.deviceRegistry.GetAuth
 	}
-	// 9.4-D: wire GetAuth on the notification device store so push registration
-	// atomically validates active state + epoch before committing the binding.
-	if a.n1DeviceStore != nil && a.deviceRegistry != nil {
-		a.n1DeviceStore.GetAuth = a.deviceRegistry.GetAuth
-	}
 	// M2.5-5: wire the local device-admin surface (list/revoke/audit) so the
 	// 0600 socket can revoke a device and read the redacted audit trail.
 	term.SetDeviceAdminContext(a.sessionMgr, a.audit)
@@ -1136,8 +1122,8 @@ type pushNotifier struct {
 	send    pushSender // injectable for tests
 }
 
-func newPushNotifier() *pushNotifier {
-	return &pushNotifier{send: sendPushNotification, devices: notification.NewDeviceStore()}
+func newPushNotifier(authorizer devicetrust.MutationAuthorizer) *pushNotifier {
+	return &pushNotifier{send: sendPushNotification, devices: notification.NewDeviceStore(authorizer)}
 }
 
 func (n *pushNotifier) ApprovalRequired(_ context.Context, sessionID string, _ string) error {

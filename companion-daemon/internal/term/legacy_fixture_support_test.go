@@ -38,5 +38,5 @@ func closeOwnedForTest(owned *OwnedPTYRuntime, id string) {
 	if recorder := ownedRecorderForTest(owned, id); recorder != nil {
 		recorder.Stop()
 	}
-	_, _ = owned.Kill(context.Background(), id)
+	_, _ = owned.Kill(context.Background(), id, "test", 0)
 }

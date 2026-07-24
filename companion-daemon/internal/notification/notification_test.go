@@ -69,14 +69,32 @@ func validEnvelope(id, sessionID string, generation int64, kind contract.EventKi
 
 // ── T2 baseline tests (4) ──
 
-// newTestDeviceStore creates a DeviceStore with a permissive GetAuth for tests
-// that need session CRUD without real device authorization.
-func newTestDeviceStore() *DeviceStore {
-	ds := NewDeviceStore()
-	ds.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
+type notificationTestAuthorizer struct{}
+
+func (notificationTestAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
+	return nil
+}
+
+type notificationBarrierAuthorizer struct {
+	reg     *devicetrust.DeviceRegistry
+	onFirst func()
+	called  bool
+}
+
+func (a *notificationBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
+	if !a.called {
+		a.called = true
+		if a.onFirst != nil {
+			a.onFirst()
+		}
 	}
-	return ds
+	return a.reg.AuthorizeCommit(deviceID, epoch, intent)
+}
+
+// newTestDeviceStore creates a DeviceStore with an explicit permissive test
+// authorizer for tests that need session CRUD without real device authorization.
+func newTestDeviceStore() *DeviceStore {
+	return NewDeviceStore(notificationTestAuthorizer{})
 }
 
 func TestBuildClosedTaxonomyAndGenerationGate(t *testing.T) {
@@ -1185,10 +1203,10 @@ func TestOldSendVsRevokeRebind(t *testing.T) {
 	// Revoke + Rebind: bumps epoch, clears store, then re-registers.
 	notifier.RevokeDevice("device-1")
 	devices.Bind("device-1", "token-2", 0) // re-register push token
-	notifier.BindDevice("device-1")        // bump epoch again
 
 	// Unblock the old Send. The old goroutine captured epoch 0; after
-	// RevokeDevice+bumpEpoch+BindDevice+bumpEpoch, the current epoch is 2.
+	// RevokeDevice+bumpEpoch+Bind leaves the current epoch newer than the
+	// in-flight dispatch.
 	// The old goroutine's epoch check fails → cursor NOT written.
 	close(block)
 	time.Sleep(200 * time.Millisecond)
@@ -1289,8 +1307,7 @@ func (s *failAfterNSender) Send(deviceID, pushToken string, payload []byte) erro
 
 // ── 9.4-D: push-registration epoch-bound tests ──
 
-// registryBackedStore creates a DeviceStore whose GetAuth delegates to a real
-// DeviceRegistry backed by a temp file.
+// registryBackedStore creates a DeviceStore backed by a real DeviceRegistry.
 func registryBackedStore(t *testing.T) (*DeviceStore, *devicetrust.DeviceRegistry) {
 	t.Helper()
 	store := &devicetrust.FileDeviceStore{Path: t.TempDir() + "/devices.json"}
@@ -1298,9 +1315,7 @@ func registryBackedStore(t *testing.T) (*DeviceStore, *devicetrust.DeviceRegistr
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
-	ds := NewDeviceStore()
-	ds.GetAuth = reg.GetAuth
-	return ds, reg
+	return NewDeviceStore(reg), reg
 }
 
 func TestBind_RevokedDeviceRejected(t *testing.T) {
@@ -1360,37 +1375,29 @@ func TestBind_StaleEpochAfterRevokeReAddSameKey(t *testing.T) {
 }
 
 func TestBind_MissingAuthorityFailClosed(t *testing.T) {
-	ds := NewDeviceStore()
-	// No GetAuth set — must fail closed.
-	err := ds.Bind("device-1", "token-1", 0)
-	if err == nil {
-		t.Fatal("bind without GetAuth must fail (no authority configured)")
-	}
-	t.Logf("missing authority error: %v", err)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil authorizer must fail construction")
+		}
+	}()
+	_ = NewDeviceStore(nil)
 }
 
 func TestBind_RevokeWinsRace(t *testing.T) {
-	// Use GetAuth as a barrier: first call returns active+epoch N.
+	// Use the authorizer as a barrier: first call returns active+epoch N.
 	// Between the first call and the commit, goroutine B revokes.
 	// The Bind must detect the stale state and reject.
 
-	ds, reg := registryBackedStore(t)
+	_, reg := registryBackedStore(t)
 	_, pub, _ := devicetrust.GenKeypair(t)
 	dev, _ := reg.Add(pub, "test-device")
 
-	var callCount int32
 	revokeCh := make(chan struct{})
 	revokeDone := make(chan struct{})
-
-	ds.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
-		n := atomic.AddInt32(&callCount, 1)
-		if n == 1 {
-			// First (and only) call inside Bind lock: signal B to revoke, wait.
-			close(revokeCh)
-			<-revokeDone
-		}
-		return reg.GetAuth(deviceID)
-	}
+	ds := NewDeviceStore(&notificationBarrierAuthorizer{reg: reg, onFirst: func() {
+		close(revokeCh)
+		<-revokeDone
+	}})
 
 	var wg sync.WaitGroup
 	var bindErr error
@@ -1402,7 +1409,7 @@ func TestBind_RevokeWinsRace(t *testing.T) {
 		bindErr = ds.Bind(dev.DeviceID, "token-a", 0)
 	}()
 
-	// Goroutine B: wait for A to enter GetAuth, then revoke.
+	// Goroutine B: wait for A to enter the authorizer, then revoke.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

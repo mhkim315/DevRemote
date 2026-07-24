@@ -58,7 +58,7 @@ func TestInputA_SessionCapabilitiesArePrincipalAuthorized(t *testing.T) {
 	}
 	owned := testOwnedPTYRuntime(nil, nil)
 	owned.RegisterForTest("controlled_pty:capability-session", "", "test", nil)
-	h := &Handlers{Lifecycle: testLifecycleService(owned, nil)}
+	h := &Handlers{Lifecycle: testLifecycleService(owned, nil), authorizer: testMutationAuthorizer{}}
 	endpoint := devicetrust.RequirePrincipal(sessions, h.HandleSessionsV2, devicetrust.PermSessionsRead)
 	for _, tc := range []struct {
 		name, token string
@@ -125,7 +125,7 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	defer pw.Close()
 
 	writes := &inputAWriteCounter{}
-	transport := newTerminalTransport(session, 1, writes, stream, recorder)
+	transport := newTerminalTransport(session, 1, writes, stream, recorder, testMutationAuthorizer{})
 	owned := testOwnedPTYRuntime(nil, nil)
 	owned.RegisterForTest(session, "", "test", recorder)
 	owned.mu.Lock()
@@ -145,7 +145,7 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	if principal == nil {
 		t.Fatal("device session did not authenticate")
 	}
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
 	ticket, _, err := tickets.Issue(principal, identity.HostID, session)
 	if err != nil {
 		t.Fatal(err)

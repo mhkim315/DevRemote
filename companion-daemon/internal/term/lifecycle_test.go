@@ -89,7 +89,7 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 	ext := newLCAdapter("legacy", false)
 	extID := ext.add("e1")
 	svcE := lcService(t, ext)
-	hE := &Handlers{Lifecycle: svcE}
+	hE := &Handlers{Lifecycle: svcE, authorizer: testMutationAuthorizer{}}
 	for _, action := range []string{"stop", "kill", ""} {
 		method := http.MethodPost
 		if action == "" {
@@ -103,7 +103,7 @@ func TestLifecycle_HTTPStatusCodes(t *testing.T) {
 	// Unknown controlled_pty session → 404.
 	man := newLCAdapter("controlled_pty", true)
 	svcM := lcService(t, man)
-	hM := &Handlers{Lifecycle: svcM}
+	hM := &Handlers{Lifecycle: svcM, authorizer: testMutationAuthorizer{}}
 	if rr := lcRequest(t, hM, http.MethodPost, "controlled_pty:missing", "stop"); rr.Code != http.StatusNotFound {
 		t.Fatalf("unknown stop status = %d, want 404", rr.Code)
 	}

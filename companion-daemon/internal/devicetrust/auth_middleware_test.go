@@ -130,7 +130,7 @@ func TestBearerToken_Extraction(t *testing.T) {
 }
 
 func TestWSTicketStore_Consume(t *testing.T) {
-	s := NewWSTicketStore()
+	s := NewWSTicketStore(testMutationAuthorizer{})
 	m := NewPermissiveSessionManager("b1", 20*time.Minute)
 	rawBearer, sid, exp, _ := m.CreateAfterVerifiedChallenge("d1", "h1", "b1", []string{PermSessionsRead}, 0)
 	p := m.AuthenticateBearer(rawBearer)
@@ -148,12 +148,12 @@ func TestWSTicketStore_Consume(t *testing.T) {
 }
 
 func TestConnRegistry_CloseDevice(t *testing.T) {
-	r := NewAuthenticatedConnRegistry()
+	r := NewAuthenticatedConnRegistry(testMutationAuthorizer{})
 	closed := make(chan struct{}, 2)
 	mk := func() *testCloser { return &testCloser{ch: closed} }
-	r.Register("d1", mk())
-	r.Register("d1", mk())
-	r.Register("d2", mk())
+	_ = r.Register("d1", 0, mk())
+	_ = r.Register("d1", 0, mk())
+	_ = r.Register("d2", 0, mk())
 	r.CloseDevice("d1")
 	if len(closed) != 2 {
 		t.Fatalf("closed=%d want 2", len(closed))

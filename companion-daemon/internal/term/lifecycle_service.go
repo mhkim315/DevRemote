@@ -161,7 +161,7 @@ func (s *LifecycleService) Stop(ctx context.Context, id string, deviceID string,
 		if s.ownedPTY == nil {
 			return LifecycleResult{}, ErrLifecycleUnavailable
 		}
-		return s.ownedPTY.Stop(ctx, id)
+		return s.ownedPTY.Stop(ctx, id, deviceID, deviceEpoch)
 	}
 	rec, derr := s.deriveEpoch(id)
 	if derr != nil {
@@ -189,7 +189,7 @@ func (s *LifecycleService) Kill(ctx context.Context, id string, deviceID string,
 		if s.ownedPTY == nil {
 			return LifecycleResult{}, ErrLifecycleUnavailable
 		}
-		return s.ownedPTY.Kill(ctx, id)
+		return s.ownedPTY.Kill(ctx, id, deviceID, deviceEpoch)
 	}
 	rec, derr := s.deriveEpoch(id)
 	if derr != nil {
@@ -218,7 +218,7 @@ func (s *LifecycleService) Delete(ctx context.Context, id string, deviceID strin
 		if s.ownedPTY == nil {
 			return LifecycleResult{}, ErrLifecycleUnavailable
 		}
-		return s.ownedPTY.Delete(ctx, id)
+		return s.ownedPTY.Delete(ctx, id, deviceID, deviceEpoch)
 	}
 	rec, derr := s.deriveEpoch(id)
 	if derr != nil {

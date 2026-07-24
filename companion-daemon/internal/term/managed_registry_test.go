@@ -68,7 +68,7 @@ func TestManagedRegistryRegisterIncarnationReplacesExactPreviousEpoch(t *testing
 	replacement.CreatedAt = original.CreatedAt.Add(time.Second)
 	replacement.NativeStatus = ManagedStatusExited
 	replacement.Exited = true
-	if err := g.RegisterIncarnation(1, replacement); err != nil {
+	if err := g.RegisterIncarnation(testMutationAuthorizer{}, "test-device", 0, 1, replacement); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := g.Get(original.SessionID)
@@ -93,7 +93,7 @@ func TestManagedRegistryRegisterIncarnationReplacesExactPreviousEpoch(t *testing
 			if name == "stale previous" {
 				previousEpoch = 1
 			}
-			if err := g.RegisterIncarnation(previousEpoch, candidate); err == nil {
+			if err := g.RegisterIncarnation(testMutationAuthorizer{}, "test-device", 0, previousEpoch, candidate); err == nil {
 				t.Fatalf("%s replacement accepted", name)
 			}
 			after, _ := g.Get(original.SessionID)
@@ -105,7 +105,7 @@ func TestManagedRegistryRegisterIncarnationReplacesExactPreviousEpoch(t *testing
 	if !g.MarkExited(original.SessionID, replacement.Epoch) {
 		t.Fatal("replacement did not become terminal")
 	}
-	if err := g.RestoreIncarnation(replacement.Epoch, original); err != nil {
+	if err := g.RestoreIncarnation(testMutationAuthorizer{}, "test-device", 0, replacement.Epoch, original); err != nil {
 		t.Fatal(err)
 	}
 	restored, _ := g.Get(original.SessionID)

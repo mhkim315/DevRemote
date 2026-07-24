@@ -1124,6 +1124,14 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, devic
 	}
 	s.gen++
 	epoch := s.gen
+	// ReserveRuntimeGeneration mutates the authoritative approval store and is
+	// therefore itself behind the service-owned create authorization boundary.
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+		s.mu.Unlock()
+		bridge.close()
+		os.RemoveAll(hookDir)
+		return "", err
+	}
 	s.mu.Unlock()
 
 	// Reserve Store authority first — if this fails, never spawn.
@@ -1146,6 +1154,20 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, devic
 	}
 
 	s.barrier("pre-spawn")
+	// The provider launch is the create side effect. Recheck after the
+	// pre-spawn pause and immediately before crossing into launcher I/O.
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		rollback()
+		return "", fmt.Errorf("managed claude service is shutting down")
+	}
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+		s.mu.Unlock()
+		rollback()
+		return "", err
+	}
+	s.mu.Unlock()
 
 	argv := []string{
 		"--verbose",
@@ -1283,6 +1305,12 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, devic
 // No lock is held across spawn or I/O. The caller is responsible for
 // cleaning up the returned runtime via terminate().
 func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resumeContext) (*claudeManagedRuntime, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("managed claude resume: context is required")
+	}
+	if err := s.authorizer.AuthorizeCommit(ctx.deviceID, ctx.deviceEpoch, devicetrust.IntentApprovalResume); err != nil {
+		return nil, err
+	}
 	cwd := ctx.originalCWD
 	if cwd == "" {
 		cwd = "/tmp"
@@ -1465,7 +1493,7 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		revokeOperationalRuntime(previous.operationalSink())
 	}
 	s.barrier("post-resume-revoke")
-	if err := s.reg.RegisterIncarnation(ctx.originalRuntime.LaunchGen, rec); err != nil {
+	if err := s.reg.RegisterIncarnation(s.authorizer, ctx.deviceID, ctx.deviceEpoch, ctx.originalRuntime.LaunchGen, rec); err != nil {
 		// Registration did not replace N, so a live original may receive a
 		// fresh sender. Never resurrect one that terminated while the failed
 		// resume was being prepared.
@@ -1522,7 +1550,10 @@ func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	if previous.atomicTerminated.Load() || s.closing || s.runtimes[rt.sessionID] != rt || rt.terminalIntent {
 		return
 	}
-	if err := s.reg.RestoreIncarnation(rt.epoch, record); err != nil {
+	if rt.resumeCtx == nil || s.authorizer.AuthorizeCommit(rt.resumeCtx.deviceID, rt.resumeCtx.deviceEpoch, devicetrust.IntentSessionRestore) != nil {
+		return
+	}
+	if err := s.reg.RestoreIncarnation(s.authorizer, rt.resumeCtx.deviceID, rt.resumeCtx.deviceEpoch, rt.epoch, record); err != nil {
 		return
 	}
 	s.barrier("post-resume-restore")

@@ -9,19 +9,30 @@ import (
 // device. On device revoke or session replacement, every connection for
 // that device is closed promptly. Thread-safe.
 type AuthenticatedConnRegistry struct {
-	mu    sync.Mutex
-	conns map[string][]io.Closer // deviceID → closers
+	mu         sync.Mutex
+	conns      map[string][]io.Closer // deviceID → closers
+	authorizer MutationAuthorizer
 }
 
-func NewAuthenticatedConnRegistry() *AuthenticatedConnRegistry {
-	return &AuthenticatedConnRegistry{conns: make(map[string][]io.Closer)}
+func NewAuthenticatedConnRegistry(authorizer MutationAuthorizer) *AuthenticatedConnRegistry {
+	if authorizer == nil {
+		panic("authenticated connection mutation authorizer is required")
+	}
+	return &AuthenticatedConnRegistry{conns: make(map[string][]io.Closer), authorizer: authorizer}
 }
 
 // Register adds a connection for a device. Safe to call concurrently.
-func (r *AuthenticatedConnRegistry) Register(deviceID string, closer io.Closer) {
+func (r *AuthenticatedConnRegistry) Register(deviceID string, deviceEpoch uint64, closer io.Closer) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.authorizer == nil {
+		return ErrNoAuthority
+	}
+	if err := r.authorizer.AuthorizeCommit(deviceID, deviceEpoch, IntentReconnect); err != nil {
+		return err
+	}
 	r.conns[deviceID] = append(r.conns[deviceID], closer)
-	r.mu.Unlock()
+	return nil
 }
 
 // Unregister removes a specific connection. Idempotent.

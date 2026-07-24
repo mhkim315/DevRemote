@@ -10,6 +10,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 // ManagedNativeStatus is the closed semantic-status vocabulary for managed
@@ -111,9 +113,15 @@ func (g *ManagedSessionRegistry) Register(rec ManagedSessionRecord) error {
 // identity with a strictly newer provider incarnation. The caller must name
 // the exact previous epoch it is replacing; concurrent or stale replacements
 // fail closed without changing the registry.
-func (g *ManagedSessionRegistry) RegisterIncarnation(previousEpoch int64, rec ManagedSessionRecord) error {
+func (g *ManagedSessionRegistry) RegisterIncarnation(authorizer devicetrust.MutationAuthorizer, deviceID string, deviceEpoch uint64, previousEpoch int64, rec ManagedSessionRecord) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if authorizer == nil {
+		return devicetrust.ErrNoAuthority
+	}
+	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
+		return err
+	}
 	if g.closed {
 		return fmt.Errorf("managed registry closed")
 	}
@@ -143,9 +151,15 @@ func (g *ManagedSessionRegistry) RegisterIncarnation(previousEpoch int64, rec Ma
 // incarnation is terminal and the saved runtime identity is from the same
 // provider/session. This supports Claude's live-original test/control path;
 // a normally exited deferred original is never restored.
-func (g *ManagedSessionRegistry) RestoreIncarnation(currentEpoch int64, rec ManagedSessionRecord) error {
+func (g *ManagedSessionRegistry) RestoreIncarnation(authorizer devicetrust.MutationAuthorizer, deviceID string, deviceEpoch uint64, currentEpoch int64, rec ManagedSessionRecord) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if authorizer == nil {
+		return devicetrust.ErrNoAuthority
+	}
+	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
+		return err
+	}
 	if g.closed {
 		return fmt.Errorf("managed registry closed")
 	}

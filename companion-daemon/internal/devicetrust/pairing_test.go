@@ -852,7 +852,7 @@ func main() {
 		fail("managed session entry=%+v ok=%v", entry, ok)
 	}
 
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(probeMutationAuthorizer{})
 	ticket, ticketExpiry, err := tickets.Issue(principal, identity.HostID, sessionID)
 	if err != nil || ticket == "" || ticketExpiry.IsZero() {
 		fail("issue WS ticket: ticket=%q expiry=%v err=%v", ticket, ticketExpiry, err)

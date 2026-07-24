@@ -47,14 +47,18 @@ type WSTicketStore struct {
 	ttl          time.Duration
 	maxPerDevice int
 	maxTotal     int
+	authorizer   MutationAuthorizer
 }
 
-func NewWSTicketStore() *WSTicketStore {
-	return NewWSTicketStoreWithConfig(WSTicketStoreConfig{})
+func NewWSTicketStore(authorizer MutationAuthorizer) *WSTicketStore {
+	return NewWSTicketStoreWithConfig(authorizer, WSTicketStoreConfig{})
 
 }
 
-func NewWSTicketStoreWithConfig(cfg WSTicketStoreConfig) *WSTicketStore {
+func NewWSTicketStoreWithConfig(authorizer MutationAuthorizer, cfg WSTicketStoreConfig) *WSTicketStore {
+	if authorizer == nil {
+		panic("websocket ticket mutation authorizer is required")
+	}
 	if cfg.TTL <= 0 {
 		cfg.TTL = 30 * time.Second
 	}
@@ -69,6 +73,7 @@ func NewWSTicketStoreWithConfig(cfg WSTicketStoreConfig) *WSTicketStore {
 		ttl:          cfg.TTL,
 		maxPerDevice: cfg.MaxPerDevice,
 		maxTotal:     cfg.MaxTotal,
+		authorizer:   authorizer,
 	}
 }
 
@@ -93,6 +98,12 @@ func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.authorizer == nil {
+		return "", time.Time{}, ErrNoAuthority
+	}
+	if err := s.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect); err != nil {
+		return "", time.Time{}, err
+	}
 	// Capacity check and insertion are one atomic operation. Expired entries
 	// release both global and per-device capacity before the check.
 	s.purgeExpiredLocked(now)
@@ -170,6 +181,11 @@ func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionI
 	// the active session for this device. If the bearer was replaced or
 	// revoked after ticket issuance, the ticket is invalid.
 	if !mgr.isActiveBearer(t.DeviceID, t.Principal.BearerSessionID) {
+		t.Consumed = true
+		delete(s.tickets, digest)
+		return nil
+	}
+	if s.authorizer == nil || s.authorizer.AuthorizeCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect) != nil {
 		t.Consumed = true
 		delete(s.tickets, digest)
 		return nil

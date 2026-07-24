@@ -239,7 +239,7 @@ func TestEpoch_RevokeVsRefresh(t *testing.T) {
 	if p := mgr.AuthenticateBearer(tok); p != nil {
 		t.Fatal("revoke vs refresh: stale session accepted after revoke")
 		// Post-revoke create must fail — GetAuth reports Active=false.
-		_, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), reg.GetEpoch(dev.DeviceID))
+		_, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), int64(reg.GetAuth(dev.DeviceID).Epoch))
 		if err == nil {
 			t.Fatal("revoke vs refresh: post-revoke session create must fail for inactive device")
 		}
@@ -339,7 +339,7 @@ func TestEpoch_ConcurrentRevokeVsIssue(t *testing.T) {
 		defer wg.Done()
 		<-barrier
 		for i := 0; i < 50; i++ {
-			epoch := reg.GetEpoch(dev.DeviceID)
+			epoch := int64(reg.GetAuth(dev.DeviceID).Epoch)
 			_, _, _, err := mgr.CreateAfterVerifiedChallenge(dev.DeviceID, "host-1", bootID, PermissionsForRole(RoleOwner), epoch)
 			if err != nil {
 				return // epoch changed, stop

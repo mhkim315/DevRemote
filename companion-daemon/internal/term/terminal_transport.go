@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
-var errInputEpochRejected = errors.New("terminal input epoch rejected")
+var errInputAuthorization = errors.New("terminal input authorization rejected")
 
 // PA2d: TerminalTransport is the owned-PTY transport handle. It owns
 // generation-bound WriteInput, Resize, bounded live replay, and
@@ -32,8 +34,9 @@ type TerminalTransport struct {
 	resizer interface {
 		Resize(rows, cols int) error
 	}
-	recorder *Recorder // direct reference; nil if never set
-	retired  bool      // set by Retire/RetireIfGeneration; checked by IsRetired
+	recorder   *Recorder // direct reference; nil if never set
+	authorizer devicetrust.MutationAuthorizer
+	retired    bool // set by Retire/RetireIfGeneration; checked by IsRetired
 
 	// subscriberFanOutHook is an optional test hook called inside the
 	// RLock critical section after recorder capture and before unlock.
@@ -45,13 +48,14 @@ type TerminalTransport struct {
 // session. The session must satisfy io.Writer (PTY Write) and
 // Resize(int,int) error. The recorder is an optional direct reference;
 // when nil, SubscriberFanOut returns false (no subscriber capability).
-func newTerminalTransport(sessionID string, gen int64, writer io.Writer, resizer interface{ Resize(int, int) error }, rec *Recorder) *TerminalTransport {
+func newTerminalTransport(sessionID string, gen int64, writer io.Writer, resizer interface{ Resize(int, int) error }, rec *Recorder, authorizer devicetrust.MutationAuthorizer) *TerminalTransport {
 	return &TerminalTransport{
 		sessionID:  sessionID,
 		generation: gen,
 		writer:     writer,
 		resizer:    resizer,
 		recorder:   rec,
+		authorizer: authorizer,
 	}
 }
 
@@ -82,31 +86,43 @@ func (t *TerminalTransport) RetireIfGeneration(gen int64) {
 
 // WriteInput writes keystrokes/input to the owned PTY, gated by the
 // generation guard. A retired handle silently discards input (fail-closed).
-// PB.7 Input-B: holds RLock through w.Write so Retire cannot interleave
-// between the nil-check and the write — the write is atomic from the
-// transport's perspective.
-func (t *TerminalTransport) WriteInput(data []byte, epochRecheck ...func() error) (int, error) {
+// Authorization and transport capture are the commit boundary. The PTY write
+// occurs after releasing the transport lock so no internal lock spans external
+// I/O; a retirement racing after capture is ordered after this commit.
+func (t *TerminalTransport) WriteInput(data []byte, deviceID string, deviceEpoch uint64) (int, error) {
 	t.mu.RLock()
-	defer t.mu.RUnlock()
-	if t.writer == nil {
+	w := t.writer
+	if w == nil {
+		t.mu.RUnlock()
 		return 0, nil // retired — fail closed
 	}
-	// Keep the authority recheck inside the same transport read lock as the
-	// actual write. This is the input-delivery linearization point: the
-	// handler's preflight check cannot be separated from the mutation by a
-	// transport retirement or another input operation.
-	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
-		if err := epochRecheck[0](); err != nil {
-			return 0, fmt.Errorf("%w: %v", errInputEpochRejected, err)
-		}
+	if t.authorizer == nil {
+		t.mu.RUnlock()
+		return 0, devicetrust.ErrNoAuthority
 	}
-	return t.writer.Write(data)
+	if err := t.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentWSInput); err != nil {
+		t.mu.RUnlock()
+		return 0, fmt.Errorf("%w: %v", errInputAuthorization, err)
+	}
+	t.mu.RUnlock()
+	return w.Write(data)
 }
 
 // Resize changes the PTY geometry, gated by the generation guard.
-func (t *TerminalTransport) Resize(rows, cols int) error {
+func (t *TerminalTransport) Resize(rows, cols int, deviceID string, deviceEpoch uint64) error {
 	t.mu.RLock()
 	r := t.resizer
+	authorizer := t.authorizer
+	if r != nil && authorizer == nil {
+		t.mu.RUnlock()
+		return devicetrust.ErrNoAuthority
+	}
+	if r != nil {
+		if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPTYResize); err != nil {
+			t.mu.RUnlock()
+			return err
+		}
+	}
 	t.mu.RUnlock()
 	if r == nil {
 		return nil // retired — fail closed

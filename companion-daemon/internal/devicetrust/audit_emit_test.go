@@ -92,7 +92,7 @@ func TestAuditEmit_VerifyDenyBadSignature(t *testing.T) {
 
 func TestAuditEmit_WSTicketDenyOnly(t *testing.T) {
 	cap := &captureAudit{}
-	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 1, MaxTotal: 1})
+	s := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 1, MaxTotal: 1})
 	h := HandleWSTicket(s, cap)
 	p := &Principal{
 		DeviceID: "device", HostID: "host", BearerSessionID: "bearer",

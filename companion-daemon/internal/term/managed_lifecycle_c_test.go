@@ -159,7 +159,7 @@ func TestManagedDelete_TerminalOnly_ClearsData_LaterEventsInert(t *testing.T) {
 	}
 	store.append(ManagedEventWorking, "") // must be a no-op, not a panic
 	// REST surfaces are gone.
-	h := &Handlers{Managed: managed}
+	h := &Handlers{Managed: managed, authorizer: testMutationAuthorizer{}}
 	if code, _ := getEvents(t, h, id, "epoch=1&cursor=0"); code != 404 {
 		t.Fatalf("events after delete code = %d", code)
 	}
@@ -372,7 +372,7 @@ func TestManagedLifecycle_ConcurrentRace(t *testing.T) {
 func TestManagedLifecycleAPI_FailClosedAndIdempotent(t *testing.T) {
 	app := &interactiveAppServer{threadID: "thread-C12"}
 	managed, _, id := createInteractive(t, app)
-	h := &Handlers{Managed: managed}
+	h := &Handlers{Managed: managed, authorizer: testMutationAuthorizer{}}
 
 	do := func(method, sub, body string) (int, string) {
 		req := httptest.NewRequest(method, "/api/managed-sessions/x"+sub, strings.NewReader(body))

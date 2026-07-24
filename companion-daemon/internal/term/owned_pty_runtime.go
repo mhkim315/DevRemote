@@ -82,6 +82,12 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		return "", err
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
+	// Recheck immediately before any replacement cleanup or PTY launch. This
+	// is the create commit boundary; a denied create must not terminate an
+	// existing generation.
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+		return "", err
+	}
 	// Retire the exact prior generation before launching a replacement. The
 	// generation check inside finalize prevents a stale cleanup from touching a
 	// later launch with the same canonical id.
@@ -105,7 +111,7 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	}
 	ps := &handleStream{PTYHandle: result.Handle, reader: stream}
 	rec := StartRecorderUnconditional(canonicalID, ps)
-	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec)
+	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec, o.authorizer)
 	cleanup := func(c context.Context) CleanupOutcome { return result.ProcessCleanup.Execute(c) }
 	gen := o.register(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec)
 	o.watchExit(canonicalID, gen, rec)
@@ -207,19 +213,27 @@ func (o *OwnedPTYRuntime) requestKill(id string, g int64) (bool, LifecycleState,
 	e.killRequested = true
 	return true, e.State, true, false, e.handle, e.Identity
 }
-func (o *OwnedPTYRuntime) Stop(ctx context.Context, id string) (LifecycleResult, error) {
-	return o.terminate(ctx, id, "stop", false)
+func (o *OwnedPTYRuntime) Stop(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
+	return o.terminate(ctx, id, "stop", false, deviceID, deviceEpoch)
 }
-func (o *OwnedPTYRuntime) Kill(ctx context.Context, id string) (LifecycleResult, error) {
-	return o.terminate(ctx, id, "kill", true)
+func (o *OwnedPTYRuntime) Kill(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
+	return o.terminate(ctx, id, "kill", true, deviceID, deviceEpoch)
 }
-func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, force bool) (LifecycleResult, error) {
+func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, force bool, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	g, ok := o.currentGeneration(id)
 	if !ok {
 		return LifecycleResult{}, ErrLifecycleNotFound
 	}
 	l := o.lockFor(id)
 	l.Lock()
+	intent := devicetrust.IntentSessionStop
+	if force {
+		intent = devicetrust.IntentSessionKill
+	}
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+		l.Unlock()
+		return LifecycleResult{}, err
+	}
 	var proceed, found, stale bool
 	var state LifecycleState
 	var h PTYHandle
@@ -321,20 +335,26 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 		}
 	}
 }
-func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string) (LifecycleResult, error) {
+func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	l := o.lockFor(id)
 	l.Lock()
-	defer l.Unlock()
+	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+		l.Unlock()
+		return LifecycleResult{}, err
+	}
 	e, ok := o.Get(id)
 	if !ok {
+		l.Unlock()
 		return LifecycleResult{}, ErrLifecycleNotFound
 	}
 	if !e.State.Terminal() {
+		l.Unlock()
 		return LifecycleResult{}, ErrLifecycleNotTerminal
 	}
 	o.mu.Lock()
 	delete(o.entries, id)
 	o.mu.Unlock()
+	l.Unlock()
 	if o.transcript != nil {
 		o.transcript.ClearTranscript(id)
 	}
@@ -352,5 +372,5 @@ func (o *OwnedPTYRuntime) RegisterForTest(id, profileID, name string, rec *Recor
 			rec.Stop()
 		}
 		return CleanupOutcome{Completed: true}
-	}, newTerminalTransport(id, 0, io.Discard, nil, rec), rec)
+	}, newTerminalTransport(id, 0, io.Discard, nil, rec, o.authorizer), rec)
 }

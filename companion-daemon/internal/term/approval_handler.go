@@ -81,10 +81,9 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
-	// The bearer may have been revoked/replaced after authentication. Acquire
-	// an epoch reservation before the first approval mutation. The reservation
-	// holds the registry lock so revoke cannot interleave during the entire
-	// claim→delivery→commit window.
+	// The bearer may have been revoked/replaced after authentication. This is
+	// request admission only; the store and delivery gate repeat the
+	// service-owned authorization at each commit boundary.
 	if err := h.authorizeRequest(r, devicetrust.IntentApprovalClaim); err != nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
 		return
@@ -118,8 +117,6 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_runtime", http.StatusConflict)
 		return
 	}
-	// Reservation held: epoch cannot change during delivery.
-
 	delivery := h.ApprovalDelivery
 	if delivery == nil {
 		delivery = NewUnavailableApprovalDelivery()

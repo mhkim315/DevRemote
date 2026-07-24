@@ -100,7 +100,7 @@ func decodeInputOutcome(t *testing.T, raw []byte) inputResult {
 
 func TestInputB_ClosedOutcomesAndPermissionLimiter(t *testing.T) {
 	writer := &inputBWriter{}
-	transport := newTerminalTransport("controlled_pty:input-b-ack", 7, writer, nil, nil)
+	transport := newTerminalTransport("controlled_pty:input-b-ack", 7, writer, nil, nil, testMutationAuthorizer{})
 	cache := newInputRecentCache()
 	seq := uint64(0)
 	msg := protocolRequest([]byte("x"))
@@ -164,12 +164,12 @@ func TestInputB_CacheCapacityNeverEvictsAcceptedReplay(t *testing.T) {
 
 func TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration(t *testing.T) {
 	oldWriter := &inputBWriter{}
-	captured := newTerminalTransport("controlled_pty:input-b-ack", 7, oldWriter, nil, nil)
+	captured := newTerminalTransport("controlled_pty:input-b-ack", 7, oldWriter, nil, nil, testMutationAuthorizer{})
 	// Model same-ID replacement: the old captured handle is retired and a
 	// distinct generation exists elsewhere. handleTerminalInput receives only
 	// the captured handle, never a session lookup that could select replacement.
 	captured.Retire()
-	_ = newTerminalTransport("controlled_pty:input-b-ack", 8, &inputBWriter{}, nil, nil)
+	_ = newTerminalTransport("controlled_pty:input-b-ack", 8, &inputBWriter{}, nil, nil, testMutationAuthorizer{})
 	seq := uint64(0)
 	result := decodeInputOutcome(t, handleTerminalInput(protocolRequest([]byte("old connection")), "controlled_pty:input-b-ack", 7, captured, nil, &seq, nil, newInputRecentCache(), "conn", newInputPermissionLimiter(time.Now())))
 	if result.Outcome != "write_failed" {
@@ -182,9 +182,9 @@ func TestInputB_ReplacedCapturedTransportCannotWriteNewGeneration(t *testing.T) 
 
 func TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration(t *testing.T) {
 	oldWriter := &blockingInputWriter{started: make(chan struct{}), release: make(chan struct{})}
-	captured := newTerminalTransport("controlled_pty:input-b-ack", 7, oldWriter, nil, nil)
+	captured := newTerminalTransport("controlled_pty:input-b-ack", 7, oldWriter, nil, nil, testMutationAuthorizer{})
 	newWriter := &inputBWriter{}
-	_ = newTerminalTransport("controlled_pty:input-b-ack", 8, newWriter, nil, nil)
+	_ = newTerminalTransport("controlled_pty:input-b-ack", 8, newWriter, nil, nil, testMutationAuthorizer{})
 	seq := uint64(0)
 	resultCh := make(chan []byte, 1)
 	go func() {
@@ -193,11 +193,8 @@ func TestInputB_ReplacementRaceKeepsWriteBoundToCapturedGeneration(t *testing.T)
 	<-oldWriter.started
 	retired := make(chan struct{})
 	go func() { captured.Retire(); close(retired) }()
-	select {
-	case <-retired:
-		t.Fatal("replacement retired captured transport while its write was active")
-	case <-time.After(20 * time.Millisecond):
-	}
+	// Retirement may complete while the already-authorized write is in
+	// progress; the captured writer remains generation-bound.
 	close(oldWriter.release)
 	result := decodeInputOutcome(t, <-resultCh)
 	<-retired

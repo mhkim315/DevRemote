@@ -145,6 +145,7 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 			PhoneSignature []byte `json:"phoneSignature,omitempty"`
 			// device admin (M2.5-5, local 0600 socket only)
 			DeviceID     string `json:"deviceId"`
+			DeviceEpoch  uint64 `json:"deviceEpoch"`
 			FromDeviceID string `json:"fromDeviceId"`
 			ToDeviceID   string `json:"toDeviceId"`
 			Limit        int    `json:"limit"`
@@ -182,9 +183,9 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 				var id string
 				var merr error
 				if req.Detach {
-					id, merr = managed.CreateDetached(req.CWD, "", 0)
+					id, merr = managed.CreateDetached(req.CWD, req.DeviceID, req.DeviceEpoch)
 				} else {
-					id, merr = managed.CreateAttached(req.CWD, "", 0)
+					id, merr = managed.CreateAttached(req.CWD, req.DeviceID, req.DeviceEpoch)
 				}
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
@@ -201,7 +202,7 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 					json.NewEncoder(conn).Encode(map[string]string{"error": "managed claude runtime unavailable: daemon started without --enable-managed-claude"})
 					return
 				}
-				id, merr := managedClaude.CreateDetached(req.CWD, "", 0)
+				id, merr := managedClaude.CreateDetached(req.CWD, req.DeviceID, req.DeviceEpoch)
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
 				} else {
@@ -218,12 +219,14 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 				ownedPTY = lifecycle.OwnedPTY()
 			}
 			id, state, cerr := createLocalControlled(context.Background(), ownedPTY, localCreateSpec{
-				ProfileID:  req.ProfileID,
-				Name:       req.Name,
-				CWD:        req.CWD,
-				Executable: req.Executable,
-				Args:       req.Args,
-				Command:    req.Command,
+				ProfileID:   req.ProfileID,
+				Name:        req.Name,
+				CWD:         req.CWD,
+				Executable:  req.Executable,
+				Args:        req.Args,
+				Command:     req.Command,
+				DeviceID:    req.DeviceID,
+				DeviceEpoch: req.DeviceEpoch,
 			})
 			if cerr != nil {
 				json.NewEncoder(conn).Encode(map[string]string{"error": cerr.Error()})
@@ -236,7 +239,7 @@ func handleIPCConnection(conn net.Conn, telemetry *TelemetryService, lifecycle *
 			// (kernel socket writes coalesce) — recover them, or early prompt
 			// lines would be silently swallowed.
 			attachReader := bufio.NewReader(io.MultiReader(dec.Buffered(), reader))
-			handleManagedAttach(conn, attachReader, managed, req.SessionID, req.Cursor)
+			handleManagedAttach(conn, attachReader, managed, req.SessionID, req.Cursor, req.DeviceID, req.DeviceEpoch)
 			return
 		} else if req.Operation == "pair-start" {
 			handlePairOp(conn, req.Operation, req.Duration, nil)
@@ -353,7 +356,7 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 		}
 
 		if cols > 0 && rows > 0 {
-			if err := transport.Resize(rows, cols); err != nil {
+			if err := transport.Resize(rows, cols, "", 0); err != nil {
 				log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
 			}
 		}
@@ -383,7 +386,7 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 				if ts != nil {
 					ts.BeginInput(sessionID, time.Now())
 				}
-				transport.WriteInput(buf[:n])
+				transport.WriteInput(buf[:n], "", 0)
 			}
 		}
 	}

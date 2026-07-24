@@ -112,7 +112,7 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 	// loop, so stopping it first would wait for this deliberately long-lived
 	// test child instead of releasing the integration fixture promptly.
 	t.Cleanup(func() {
-		_, _ = owned.Kill(t.Context(), id)
+		_, _ = owned.Kill(t.Context(), id, "test", 0)
 		if recorder := ownedRecorderForTest(owned, id); recorder != nil {
 			recorder.Stop()
 		}
@@ -151,7 +151,7 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 	if principal == nil {
 		t.Fatal("device session did not authenticate")
 	}
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
 
 	h := &Handlers{
 		Lifecycle:    testLifecycleService(owned, nil),
@@ -512,7 +512,7 @@ func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
 	if principal == nil {
 		t.Fatal("viewer session did not authenticate")
 	}
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
 
 	h := &Handlers{
 		Lifecycle:    testLifecycleService(owned, nil),
@@ -604,7 +604,7 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 	if principal == nil {
 		t.Fatal("viewer session did not authenticate")
 	}
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
 
 	h := &Handlers{
 		Lifecycle:    testLifecycleService(owned, nil),
@@ -702,7 +702,7 @@ func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
 	if principal == nil {
 		t.Fatal("viewer session did not authenticate")
 	}
-	tickets := devicetrust.NewWSTicketStore()
+	tickets := devicetrust.NewWSTicketStore(testMutationAuthorizer{})
 
 	h := &Handlers{
 		Lifecycle:    testLifecycleService(owned, nil),

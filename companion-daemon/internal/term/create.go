@@ -181,12 +181,14 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 // legacy shell command string — all safe here because the socket is local-only
 // and not forwarded through the tunnel.
 type localCreateSpec struct {
-	ProfileID  string
-	Name       string
-	CWD        string
-	Executable string
-	Args       []string
-	Command    json.RawMessage // strict: a JSON string, or absent
+	ProfileID   string
+	Name        string
+	CWD         string
+	Executable  string
+	Args        []string
+	Command     json.RawMessage // strict: a JSON string, or absent
+	DeviceID    string
+	DeviceEpoch uint64
 }
 
 // legacyCodexCommand reports whether a legacy command string is EXACTLY the
@@ -288,7 +290,7 @@ func createLocalControlled(ctx context.Context, ownedPTY *OwnedPTYRuntime, spec 
 	if ownedPTY == nil {
 		return "", LifecycleFailed, ErrLifecycleUnavailable
 	}
-	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name, "", 0)
+	canonicalID, err := ownedPTY.Create(ctx, SpawnConfig{Name: opts.Name, Command: opts.Command, Executable: opts.Executable, Args: opts.Args, CWD: opts.CWD}, spec.ProfileID, spec.Name, spec.DeviceID, spec.DeviceEpoch)
 	if err != nil {
 		return "", LifecycleFailed, err
 	}

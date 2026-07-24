@@ -22,7 +22,7 @@ func TestLifecycle_LegacyQueryDelete_ManagedRunning_Rejected(t *testing.T) {
 	svc := lcService(t, newLCAdapter("controlled_pty", true))
 	svc.OwnedPTY().RegisterForTest(id, "", "n", nil)
 
-	h := &Handlers{Lifecycle: svc}
+	h := &Handlers{Lifecycle: svc, authorizer: testMutationAuthorizer{}}
 	// DELETE /api/sessions?id=<managed running> via the legacy handler.
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions?id="+id, nil)
 	rr := httptest.NewRecorder()
@@ -64,7 +64,7 @@ func TestLifecycle_Stop_UnconfirmedTermination_Fails(t *testing.T) {
 	id := "controlled_pty:" + localID
 	rec, _ := StartRecorder(id, handle.stream)
 	o := svc.OwnedPTY()
-	o.register(id, "", "n", handle, LaunchIdentity{InstanceID: localID, StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{handle}, handle, rec), rec)
+	o.register(id, "", "n", handle, LaunchIdentity{InstanceID: localID, StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{handle}, handle, rec, testMutationAuthorizer{}), rec)
 	t.Cleanup(func() { closeOwnedForTest(o, id) })
 
 	res, err := svc.Stop(context.Background(), id, "", 0)

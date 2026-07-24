@@ -87,7 +87,7 @@ func TestPA4_5_AllManagedReadPathsIsolatedFromRegistry(t *testing.T) {
 	}
 
 	// Transport: generation-gated, no Registry dependency.
-	tt := newTerminalTransport("test:final", 1, nil, nil, nil)
+	tt := newTerminalTransport("test:final", 1, nil, nil, nil, testMutationAuthorizer{})
 	if tt.generation != 1 {
 		t.Errorf("generation=%d, want 1", tt.generation)
 	}
@@ -156,7 +156,7 @@ func TestPA4_5_LiveAcceptanceGateStatus(t *testing.T) {
 
 	// Transport: generation-gated, no Registry.
 	var buf bytes.Buffer
-	tt := newTerminalTransport("controlled_pty:live-gate", 5, &buf, nil, nil)
+	tt := newTerminalTransport("controlled_pty:live-gate", 5, &buf, nil, nil, testMutationAuthorizer{})
 	tt.RetireIfGeneration(3) // stale gen — not retired
 	if tt.IsRetired() {
 		t.Error("transport retired by wrong generation (3 != 5)")
@@ -212,7 +212,7 @@ func TestPA4_Final_R14_SubscriberFanOut_DirectRecorder_NoGlobalLookup(t *testing
 	}
 	defer rec.Stop()
 	// Create a TerminalTransport with the direct recorder reference.
-	tt := newTerminalTransport("controlled_pty:r14-direct", 1, pw, ms, rec)
+	tt := newTerminalTransport("controlled_pty:r14-direct", 1, pw, ms, rec, testMutationAuthorizer{})
 
 	// SubscriberFanOut must succeed through the direct recorder reference.
 	bootstrap, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r14-direct")
@@ -245,7 +245,7 @@ func TestPA4_Final_R14_SubscriberFanOut_RetiredTransport_FailClosed(t *testing.T
 	}
 	defer rec.Stop()
 
-	tt := newTerminalTransport("controlled_pty:r14-retired-hw", 1, pw, ms, rec)
+	tt := newTerminalTransport("controlled_pty:r14-retired-hw", 1, pw, ms, rec, testMutationAuthorizer{})
 
 	// Verify SubscriberFanOut works before retirement.
 	_, ch, _, ok := tt.SubscriberFanOut("controlled_pty:r14-retired-hw")
@@ -301,7 +301,7 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	}
 	defer rec1.Stop()
 
-	tt1 := newTerminalTransport("controlled_pty:r14-stale", 1, pw1, ms1, rec1)
+	tt1 := newTerminalTransport("controlled_pty:r14-stale", 1, pw1, ms1, rec1, testMutationAuthorizer{})
 
 	// Verify gen-1 works.
 	_, ch1, _, ok := tt1.SubscriberFanOut("controlled_pty:r14-stale")
@@ -322,7 +322,7 @@ func TestPA4_Final_R14_SubscriberFanOut_StaleGeneration_Denied(t *testing.T) {
 	}
 	defer rec2.Stop()
 
-	tt2 := newTerminalTransport("controlled_pty:r14-stale", 2, pw2, ms2, rec2)
+	tt2 := newTerminalTransport("controlled_pty:r14-stale", 2, pw2, ms2, rec2, testMutationAuthorizer{})
 
 	// Gen-2 SubscriberFanOut must succeed.
 	_, ch2, _, ok := tt2.SubscriberFanOut("controlled_pty:r14-stale")
@@ -352,7 +352,7 @@ func TestPA4_Final_R17_SubscriberFanOut_RetireRacingSubscribe_Rejected(t *testin
 	}
 	defer rec.Stop()
 
-	tt := newTerminalTransport("controlled_pty:r17-race", 1, pw, ms, rec)
+	tt := newTerminalTransport("controlled_pty:r17-race", 1, pw, ms, rec, testMutationAuthorizer{})
 
 	// Channel to signal that goroutine A is inside the RLock.
 	insideLock := make(chan struct{})
@@ -425,7 +425,7 @@ func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testi
 	owned := testOwnedPTYRuntime(nil, nil)
 	gen1 := owned.register("controlled_pty:r17-replace", "", "orig", firstHandle,
 		LaunchIdentity{InstanceID: "original", StartedAt: time.Now()}, nil,
-		newTerminalTransport("controlled_pty:r17-replace", 0, ms1, ms1, rec1), rec1)
+		newTerminalTransport("controlled_pty:r17-replace", 0, ms1, ms1, rec1, testMutationAuthorizer{}), rec1)
 	proceed, _, found, _, capturedHandle, capturedIdentity := owned.beginStop("controlled_pty:r17-replace", gen1)
 	if !found || !proceed || capturedHandle != firstHandle || capturedIdentity.InstanceID != "original" {
 		t.Fatalf("beginStop did not retain original V1 capability: proceed=%v found=%v identity=%+v", proceed, found, capturedIdentity)
@@ -444,7 +444,7 @@ func TestPA4_Final_R17_AwaitExit_SameIDReplacement_UsesOriginalRecorder(t *testi
 	secondHandle := &migrationHandle{reader: migrationReader{done: make(chan struct{})}}
 	owned.register("controlled_pty:r17-replace", "", "replace", secondHandle,
 		LaunchIdentity{InstanceID: "replacement", StartedAt: time.Now().Add(time.Nanosecond)}, nil,
-		newTerminalTransport("controlled_pty:r17-replace", 0, ms2, ms2, rec2), rec2)
+		newTerminalTransport("controlled_pty:r17-replace", 0, ms2, ms2, rec2, testMutationAuthorizer{}), rec2)
 	if !owned.currentIdentity("controlled_pty:r17-replace", gen1, capturedIdentity) {
 		// The old capability must be rejected after replacement, rather than
 		// being redirected to the replacement handle.
@@ -483,7 +483,7 @@ func TestPB2a_ManagedPathsUnaffectedByLinkRemoval(t *testing.T) {
 	}
 
 	// TerminalTransport: intact, still uses direct recorder.
-	tt := newTerminalTransport("test:pb2a", 1, nil, nil, nil)
+	tt := newTerminalTransport("test:pb2a", 1, nil, nil, nil, testMutationAuthorizer{})
 	if tt.IsRetired() {
 		t.Error("new transport should not be retired")
 	}

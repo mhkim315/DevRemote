@@ -260,12 +260,12 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 	const id = "controlled_pty:replace-1"
 	h1 := &blockingHandle{started: make(chan struct{}), release: make(chan struct{})}
 	h2 := &countingHandle{}
-	gen1 := owned.register(id, "", "old", h1, LaunchIdentity{InstanceID: "old", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h1}, h1, nil), nil)
+	gen1 := owned.register(id, "", "old", h1, LaunchIdentity{InstanceID: "old", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h1}, h1, nil, testMutationAuthorizer{}), nil)
 
 	// Stale Stop blocks inside h1.TerminateGroup — OUTSIDE every lock.
 	stopDone := make(chan error, 1)
 	go func() {
-		_, err := owned.Stop(context.Background(), id)
+		_, err := owned.Stop(context.Background(), id, "test", 0)
 		stopDone <- err
 	}()
 	<-h1.started
@@ -274,7 +274,7 @@ func TestPA2c_R1_ReplacementDuringBlockedSignal_NeverSignalsNewProcess(t *testin
 	// this would deadlock if any lifecycle lock were held across the I/O.
 	regDone := make(chan int64, 1)
 	go func() {
-		regDone <- owned.register(id, "", "new", h2, LaunchIdentity{InstanceID: "new", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h2}, h2, nil), nil)
+		regDone <- owned.register(id, "", "new", h2, LaunchIdentity{InstanceID: "new", StartedAt: time.Now()}, func(context.Context) CleanupOutcome { return CleanupOutcome{Completed: true} }, newTerminalTransport(id, 0, handleWriter{h2}, h2, nil, testMutationAuthorizer{}), nil)
 	}()
 	var gen2 int64
 	select {

@@ -284,7 +284,6 @@ func handleTerminalInput(
 	recentCache *inputRecentCache,
 	connID string,
 	permissionLimiter *inputPermissionLimiter,
-	recheck ...func() error,
 ) []byte {
 	mkResult := func(req *inputControlRequest, outcome string, seq uint64) []byte {
 		b, _ := json.Marshal(inputResult{
@@ -350,39 +349,27 @@ func handleTerminalInput(
 	if inputTransport == nil {
 		return mkResult(req, "transport_closed", 0)
 	}
-	// The ticket principal is captured when the WebSocket is established, but
-	// its device may be revoked while the connection remains open. Recheck at
-	// the exact input-delivery boundary, after all non-mutating validation and
-	// duplicate checks and before transcript/provider writes.
-	if len(recheck) > 0 && recheck[0] != nil {
-		if err := recheck[0](); err != nil {
-			return mkResult(req, "permission_denied", 0)
-		}
+	p, _ := ticketPrincipal.(*devicetrust.Principal)
+	var deviceID string
+	var deviceEpoch uint64
+	if p != nil {
+		deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
 	}
-
-	writeArgs := []func() error{func() error {
-		if len(recheck) > 0 && recheck[0] != nil {
-			if err := recheck[0](); err != nil {
-				return err
-			}
-		}
-		// Echo suppression is part of the input mutation: perform it from the
-		// transport's lock-held callback immediately before the PTY write.
-		if transcriptSvc != nil {
-			transcriptSvc.BeginInput(session, time.Now())
-		}
-		return nil
-	}}
-	written, inErr := inputTransport.WriteInput(decoded, writeArgs...)
+	// The transport owns the authorizer and performs the decisive check at the
+	// write boundary. Echo suppression is recorded only after authorization.
+	written, inErr := inputTransport.WriteInput(decoded, deviceID, deviceEpoch)
 	var outcome string
 	var seq uint64
 	if inErr != nil || written != len(decoded) {
-		if errors.Is(inErr, errInputEpochRejected) {
+		if errors.Is(inErr, errInputAuthorization) {
 			outcome = "permission_denied"
 		} else {
 			outcome = "write_failed"
 		}
 	} else {
+		if transcriptSvc != nil {
+			transcriptSvc.BeginInput(session, time.Now())
+		}
 		outcome = "accepted"
 		*inputSequence++
 		seq = *inputSequence

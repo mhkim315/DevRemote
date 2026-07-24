@@ -127,62 +127,54 @@ func SelectSince(events []contract.Envelope, c Cursor) ([]contract.Envelope, boo
 // DeviceStore manages per-device push tokens, cursors, and binding epochs.
 // Epochs make cursor writes conditional: Revoke/Bind bump the epoch, and a
 // cursor write is only committed if the epoch matches the one captured at
-// dispatch start (atomic snapshot under the store lock).
+// dispatch start (atomic snapshot under the store lock). Push registration is
+// committed only after the immutable service authorizer accepts its intent.
 type DeviceStore struct {
 	mu     sync.RWMutex
 	tokens map[string]string // deviceID → pushToken
 	cursor map[string]Cursor // deviceID → cursor
 	epochs map[string]*int64 // deviceID → epoch pointer (shared with Notifier snapshot)
 
-	// GetAuth returns the authoritative device authorization state (Active+Epoch).
-	// When set, Bind atomically validates active state and epoch before committing
-	// the push binding. Nil → fail-closed (ErrNoAuthority).
-	GetAuth func(deviceID string) devicetrust.AuthorizationState
+	authorizer devicetrust.MutationAuthorizer
 }
 
-func NewDeviceStore() *DeviceStore {
+func NewDeviceStore(authorizer devicetrust.MutationAuthorizer) *DeviceStore {
+	if authorizer == nil {
+		panic("notification device mutation authorizer is required")
+	}
 	return &DeviceStore{
-		tokens: make(map[string]string),
-		cursor: make(map[string]Cursor),
-		epochs: make(map[string]*int64),
+		tokens:     make(map[string]string),
+		cursor:     make(map[string]Cursor),
+		epochs:     make(map[string]*int64),
+		authorizer: authorizer,
 	}
 }
 
-// Bind registers a push token and bumps the binding epoch. The authority
-// (GetAuth) performs atomic active+epoch validation under the store lock:
-// device must exist, be active, and the current epoch must match the
-// principal's epoch. A stale or revoked device is rejected.
-//
-// Nil GetAuth → fail-closed. Production must wire the authority.
+// Bind registers a push token and bumps the binding epoch. The immutable
+// service authorizer performs active+epoch validation before the commit.
 //
 // Bumping the epoch invalidates any in-flight goroutine that captured the
 // old epoch.
 func (s *DeviceStore) Bind(deviceID, pushToken string, principalEpoch int64) error {
+	return s.bind(deviceID, pushToken, principalEpoch, devicetrust.IntentDeviceBind)
+}
+
+// RegisterPush is the push-registration mutation boundary. It is distinct
+// from notification-device binding so the authorizer receives the precise
+// mutation intent for each route.
+func (s *DeviceStore) RegisterPush(deviceID, pushToken string, principalEpoch int64) error {
+	return s.bind(deviceID, pushToken, principalEpoch, devicetrust.IntentPushRegister)
+}
+
+func (s *DeviceStore) bind(deviceID, pushToken string, principalEpoch int64, intent devicetrust.MutationIntent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// 9.4-D: atomic active+epoch validation before push-binding commit.
-	if s.GetAuth == nil {
-		return fmt.Errorf("notification: push registration rejected: no authority configured")
-	}
-	auth := s.GetAuth(deviceID)
-	if !auth.Active {
-		return fmt.Errorf("notification: push registration rejected: device is not active")
-	}
-	if auth.Epoch != uint64(principalEpoch) {
-		return fmt.Errorf("notification: push registration rejected: stale device epoch (principal=%d, current=%d)", principalEpoch, auth.Epoch)
+	if err := s.authorizer.AuthorizeCommit(deviceID, uint64(principalEpoch), intent); err != nil {
+		return err
 	}
 	s.tokens[deviceID] = pushToken
 	s.bumpEpochLocked(deviceID)
 	return nil
-}
-
-// BindLocal registers a push token without authority checks. For insecure-local
-// (dev-only) mode where there is no authenticated principal.
-func (s *DeviceStore) BindLocal(deviceID, pushToken string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tokens[deviceID] = pushToken
-	s.bumpEpochLocked(deviceID)
 }
 
 // Revoke removes the device's push token and cursor, and bumps the epoch.
@@ -409,11 +401,6 @@ func (n *Notifier) Stop() (err error) {
 func (n *Notifier) RevokeDevice(deviceID string) {
 	n.devices.Revoke(deviceID)
 }
-
-// BindDevice is a no-op: epoch bump + token registration is now done
-// atomically in DeviceStore.Bind under the store lock. Retained for
-// backward compatibility with existing callers.
-func (n *Notifier) BindDevice(deviceID string) {}
 
 // ActiveGoroutines returns the count of in-flight per-device dispatch
 // goroutines. For tests: verifies singleflight and Stop cleanup.
@@ -706,7 +693,7 @@ func RegisterHandlers(mux *http.ServeMux, cfg NotificationHandlerConfig) {
 				return
 			}
 			if cfg.Devices != nil {
-				if err := cfg.Devices.Bind(deviceID, token, principal.DeviceEpoch); err != nil {
+				if err := cfg.Devices.RegisterPush(deviceID, token, principal.DeviceEpoch); err != nil {
 					http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusConflict)
 					return
 				}

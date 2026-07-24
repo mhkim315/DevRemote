@@ -21,7 +21,7 @@ import (
 // permission. Returns true if principal is nil (legacy / non-device-auth path).
 func hasTicketPerm(p *devicetrust.Principal, need string) bool {
 	if p == nil {
-		return true
+		return false
 	}
 	for _, perm := range p.Permissions {
 		if perm == need {
@@ -138,20 +138,26 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeRequest validates the request principal at the exact mutation
-// boundary. A missing principal is the explicitly unauthenticated local mode;
-// a principal always goes through the mandatory authorizer.
+// boundary. Local requests still pass through the same authorizer with an
+// empty device identity; a production registry rejects that identity.
 func (h *Handlers) authorizeRequest(r *http.Request, intent devicetrust.MutationIntent) error {
+	if h.authorizer == nil {
+		return devicetrust.ErrNoAuthority
+	}
 	p := devicetrust.PrincipalFromContext(r.Context())
 	if p == nil {
-		return nil
+		return h.authorizer.AuthorizeCommit("", 0, intent)
 	}
 	return h.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
 
 // authorizePrincipal validates a WebSocket principal at a mutation boundary.
 func (h *Handlers) authorizePrincipal(p *devicetrust.Principal, intent devicetrust.MutationIntent) error {
+	if h.authorizer == nil {
+		return devicetrust.ErrNoAuthority
+	}
 	if p == nil {
-		return nil
+		return h.authorizer.AuthorizeCommit("", 0, intent)
 	}
 	return h.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
@@ -312,7 +318,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	defer conn.Close()
 
 	if h.ConnRegistry != nil && ticketPrincipal != nil {
-		h.ConnRegistry.Register(ticketPrincipal.DeviceID, conn)
+		if err := h.ConnRegistry.Register(ticketPrincipal.DeviceID, uint64(ticketPrincipal.DeviceEpoch), conn); err != nil {
+			return
+		}
 		defer h.ConnRegistry.Unregister(ticketPrincipal.DeviceID, conn)
 	}
 	// A successful upgrade must not extend the authorizing bearer lifetime.
@@ -395,7 +403,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	// WebSocket, no device ticket) receives terminal:input — the loopback
 	// binding and --insecure-local-only flag together are the auth gate.
 	caps := effectiveInputCapabilities(ticketPrincipal)
-	if len(caps) == 0 && h.InsecureLocalOnly && ticketPrincipal == nil {
+	if len(caps) == 0 && h.InsecureLocalOnly && ticketPrincipal == nil && h.authorizer.AuthorizeCommit("", 0, devicetrust.IntentWSInput) == nil {
 		caps = []string{devicetrust.PermTerminalInput}
 	}
 	permAnnounce, _ := json.Marshal(map[string]interface{}{
@@ -474,9 +482,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				if wsErr != nil {
 					continue
 				}
-				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
-				}); result != nil {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 					default:
@@ -492,9 +498,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				if wsErr != nil {
 					continue
 				}
-				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
-				}); result != nil {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 					default:
@@ -564,18 +568,12 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				triggerClose(fmt.Errorf("input transport unavailable"))
 				break
 			}
-			written, inErr := inputTransport.WriteInput(msg, func() error {
-				if err := h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput); err != nil {
-					return err
-				}
-				// The transport callback preserves transcript/write ordering.
-				// PA3 Step 6b/T3: begin echo suppression under the same
-				// transport lock and immediately before the PTY write.
-				if h.Transcript != nil {
-					h.Transcript.BeginInput(session, time.Now())
-				}
-				return nil
-			})
+			var deviceID string
+			var deviceEpoch uint64
+			if ticketPrincipal != nil {
+				deviceID, deviceEpoch = ticketPrincipal.DeviceID, uint64(ticketPrincipal.DeviceEpoch)
+			}
+			written, inErr := inputTransport.WriteInput(msg, deviceID, deviceEpoch)
 			if inErr != nil || written != len(msg) {
 				if inErr != nil {
 					log.Printf("WS input write err: %v", inErr)
@@ -584,6 +582,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				}
 				triggerClose(fmt.Errorf("input failed"))
 				break
+			}
+			if h.Transcript != nil {
+				h.Transcript.BeginInput(session, time.Now())
 			}
 			inputSequence++
 			select {
@@ -846,7 +847,16 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		h.Cmds.Put(session, body)
+		p := devicetrust.PrincipalFromContext(r.Context())
+		var deviceID string
+		var deviceEpoch uint64
+		if p != nil {
+			deviceID, deviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+		}
+		if err := h.Cmds.PutAuthorized(session, body, deviceID, deviceEpoch); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		log.Printf("CMD POST [%s]: %q", session, string(body))
 		w.WriteHeader(200)
 		return

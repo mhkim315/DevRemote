@@ -7,8 +7,10 @@ import (
 
 func TestCommandBroker_PutAndTake(t *testing.T) {
 	t.Parallel()
-	b := NewCommandBroker()
-	b.Put("s1", []byte("hello"))
+	b := NewCommandBroker(testMutationAuthorizer{})
+	if err := b.PutAuthorized("s1", []byte("hello"), "", 0); err != nil {
+		t.Fatal(err)
+	}
 	got := b.Take("s1")
 	if string(got) != "hello" {
 		t.Errorf("Take = %q, want hello", string(got))
@@ -17,8 +19,10 @@ func TestCommandBroker_PutAndTake(t *testing.T) {
 
 func TestCommandBroker_OneShot(t *testing.T) {
 	t.Parallel()
-	b := NewCommandBroker()
-	b.Put("s1", []byte("hello"))
+	b := NewCommandBroker(testMutationAuthorizer{})
+	if err := b.PutAuthorized("s1", []byte("hello"), "", 0); err != nil {
+		t.Fatal(err)
+	}
 	b.Take("s1")
 	got := b.Take("s1")
 	if got != nil {
@@ -28,9 +32,13 @@ func TestCommandBroker_OneShot(t *testing.T) {
 
 func TestCommandBroker_Overwrite(t *testing.T) {
 	t.Parallel()
-	b := NewCommandBroker()
-	b.Put("s1", []byte("first"))
-	b.Put("s1", []byte("second"))
+	b := NewCommandBroker(testMutationAuthorizer{})
+	if err := b.PutAuthorized("s1", []byte("first"), "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PutAuthorized("s1", []byte("second"), "", 0); err != nil {
+		t.Fatal(err)
+	}
 	got := b.Take("s1")
 	if string(got) != "second" {
 		t.Errorf("Take = %q, want second", string(got))
@@ -39,9 +47,11 @@ func TestCommandBroker_Overwrite(t *testing.T) {
 
 func TestCommandBroker_InstanceIsolation(t *testing.T) {
 	t.Parallel()
-	b1 := NewCommandBroker()
-	b2 := NewCommandBroker()
-	b1.Put("s", []byte("a"))
+	b1 := NewCommandBroker(testMutationAuthorizer{})
+	b2 := NewCommandBroker(testMutationAuthorizer{})
+	if err := b1.PutAuthorized("s", []byte("a"), "", 0); err != nil {
+		t.Fatal(err)
+	}
 	if got := b2.Take("s"); got != nil {
 		t.Errorf("command leaked between instances: %q", string(got))
 	}
@@ -49,9 +59,11 @@ func TestCommandBroker_InstanceIsolation(t *testing.T) {
 
 func TestCommandBroker_PutCopiesInput(t *testing.T) {
 	t.Parallel()
-	b := NewCommandBroker()
+	b := NewCommandBroker(testMutationAuthorizer{})
 	orig := []byte("data")
-	b.Put("s", orig)
+	if err := b.PutAuthorized("s", orig, "", 0); err != nil {
+		t.Fatal(err)
+	}
 	orig[0] = 'X'
 	got := b.Take("s")
 	if string(got) == "Xata" {
@@ -61,8 +73,10 @@ func TestCommandBroker_PutCopiesInput(t *testing.T) {
 
 func TestCommandBroker_TakeReturnsCopy(t *testing.T) {
 	t.Parallel()
-	b := NewCommandBroker()
-	b.Put("s", []byte("data"))
+	b := NewCommandBroker(testMutationAuthorizer{})
+	if err := b.PutAuthorized("s", []byte("data"), "", 0); err != nil {
+		t.Fatal(err)
+	}
 	got := b.Take("s")
 	got[0] = 'X'
 	// Take again should be nil (one-shot).
@@ -72,13 +86,15 @@ func TestCommandBroker_TakeReturnsCopy(t *testing.T) {
 }
 
 func TestCommandBroker_ConcurrentAccess(t *testing.T) {
-	b := NewCommandBroker()
+	b := NewCommandBroker(testMutationAuthorizer{})
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			b.Put("s", []byte{byte(i)})
+			if err := b.PutAuthorized("s", []byte{byte(i)}, "", 0); err != nil {
+				t.Errorf("PutAuthorized: %v", err)
+			}
 			b.Take("s")
 		}(i)
 	}

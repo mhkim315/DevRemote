@@ -279,6 +279,13 @@ const (
 	IntentApprovalDeliver MutationIntent = "approval:deliver"
 	IntentApprovalCommit  MutationIntent = "approval:commit"
 	IntentPrompt          MutationIntent = "prompt"
+	IntentPTYResize       MutationIntent = "pty:resize"
+	IntentApprovalResume  MutationIntent = "approval:resume"
+	IntentApprovalCancel  MutationIntent = "approval:cancel"
+	IntentSessionRestore  MutationIntent = "session:restore"
+	IntentPushRegister    MutationIntent = "push:register"
+	IntentDeviceBind      MutationIntent = "device:bind"
+	IntentReconnect       MutationIntent = "reconnect"
 )
 
 // MutationAuthorizer is the single mandatory authorization boundary for every
@@ -304,18 +311,6 @@ func (reg *DeviceRegistry) AuthorizeCommit(deviceID string, expectedEpoch uint64
 		return fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
 	}
 	return nil
-}
-
-// GetEpoch returns the current authorization epoch for a device.
-// Returns 0 if the device is unknown (epoch 0 means never paired).
-func (r *DeviceRegistry) GetEpoch(deviceID string) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	d, ok := r.devices[deviceID]
-	if !ok {
-		return 0
-	}
-	return d.Epoch
 }
 
 // TouchLastSeen updates lastSeenAt for an active device and persists it.

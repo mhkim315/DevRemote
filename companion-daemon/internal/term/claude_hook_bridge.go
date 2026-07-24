@@ -157,6 +157,8 @@ type resumeContext struct {
 	expectedDecision string // "allow" or "deny"
 	originalCWD      string // bound from original managed session
 	resumeLaunchGen  int64  // R4: resume process epoch, independently stored by BindResumeProcess
+	deviceID         string
+	deviceEpoch      uint64
 }
 
 type claudeHookBridge struct {

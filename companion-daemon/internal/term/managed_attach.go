@@ -47,7 +47,7 @@ type managedAttachLine struct {
 // handleManagedAttach bridges one local client to a managed session:
 // projected events stream out as JSONL from the given cursor; prompt lines
 // come in and are delivered ONLY through ManagedCodexService.SubmitPrompt.
-func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCodexService, sessionID string, cursor uint64) {
+func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCodexService, sessionID string, cursor uint64, deviceID string, deviceEpoch uint64) {
 	enc := json.NewEncoder(conn)
 	var wmu sync.Mutex
 	writeLine := func(v any) error {
@@ -110,7 +110,7 @@ func handleManagedAttach(conn net.Conn, reader *bufio.Reader, managed *ManagedCo
 			_ = writeLine(map[string]string{"error": "malformed input line"})
 			continue
 		}
-		if perr := managed.SubmitPrompt(sessionID, epoch, in.Prompt, "", 0); perr != nil {
+		if perr := managed.SubmitPrompt(sessionID, epoch, in.Prompt, deviceID, deviceEpoch); perr != nil {
 			_ = writeLine(map[string]string{"error": perr.Error()})
 		}
 	}

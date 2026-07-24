@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/notification"
 	"devremote/companion-daemon/internal/term"
 )
@@ -98,7 +97,7 @@ func (s *appV1IPC) wasClosed() bool {
 
 func v1LifecycleDeps(w watcherResource, ipc ipcResource) Dependencies {
 	return Dependencies{
-		Cmds: term.NewCommandBroker(),
+		Cmds: term.NewCommandBroker(testMutationAuthorizer{}),
 		StartWatcher: func() (watcherResource, error) {
 			return w, nil
 		},
@@ -202,7 +201,7 @@ func TestAppV1_HandlerRuntimeIsolation(t *testing.T) {
 
 func TestAppV1_InjectedVerifierGuardsComposedRoutes(t *testing.T) {
 	verifier := &appV1RejectingVerifier{}
-	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{Verifier: verifier, Cmds: term.NewCommandBroker()})
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true}, Dependencies{Verifier: verifier, Cmds: term.NewCommandBroker(testMutationAuthorizer{})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,10 +213,7 @@ func TestAppV1_InjectedVerifierGuardsComposedRoutes(t *testing.T) {
 }
 
 func TestAppV1_PushNotifierConcurrentAccess(t *testing.T) {
-	devices := notification.NewDeviceStore()
-	devices.GetAuth = func(deviceID string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Epoch: 0, Active: true}
-	}
+	devices := notification.NewDeviceStore(testMutationAuthorizer{})
 	notifier := &pushNotifier{send: func(string, string, string) {}, devices: devices}
 	var wg sync.WaitGroup
 	for range 32 {
@@ -233,7 +229,7 @@ func TestAppV1_ManagedCatalogIsCompositionOwned(t *testing.T) {
 		Bin: "/pinned/toolchain/node_modules/.bin/codex", Version: "codex-cli 0.144.1", AuthorityVersion: "0.144.1",
 	}, appV1CodexLauncher{})
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: true, EnableManagedCodex: true}, Dependencies{
-		Cmds: term.NewCommandBroker(), Managed: managed,
+		Cmds: term.NewCommandBroker(testMutationAuthorizer{}), Managed: managed,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +246,7 @@ func TestAppV1_RunCleansPartialStartWhenIPCUnavailable(t *testing.T) {
 	watcher := &appV1Watcher{}
 	ipcErr := errors.New("ipc unavailable")
 	deps := Dependencies{
-		Cmds:         term.NewCommandBroker(),
+		Cmds:         term.NewCommandBroker(testMutationAuthorizer{}),
 		StartWatcher: func() (watcherResource, error) { return watcher, nil },
 		StartIPC: func(string, *term.TelemetryService, *term.LifecycleService) (ipcResource, error) {
 			return nil, ipcErr

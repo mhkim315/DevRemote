@@ -133,6 +133,8 @@ func (d *ClaudeManagedApprovalDelivery) Deliver(req ApprovalDeliveryRequest) Del
 		inputDigest:      id.inputDigest,
 		expectedDecision: decision,
 		originalCWD:      resumeCWD,
+		deviceID:         req.DeviceID,
+		deviceEpoch:      req.DeviceEpoch,
 	}
 
 	// Spawn the resumed Claude process. The bridge runs ClaimWrite →

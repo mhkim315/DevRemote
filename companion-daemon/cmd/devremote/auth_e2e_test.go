@@ -475,6 +475,8 @@ func TestRemoteWSTicketCapacityThroughProductionHandler(t *testing.T) {
 	ownerPriv, ownerPub, _ := devicetrust.GenKeypair(t)
 	owner, _ := reg.Add(ownerPub, "owner")
 	deps := testDeps()
+	deps.HostIdentity = id
+	deps.DeviceRegistry = reg
 	deps.WSTicketConfig = &devicetrust.WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 1, MaxTotal: 1}
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
 	if err != nil {
@@ -525,6 +527,7 @@ func TestRemoteWSTicketCapacityThroughProductionHandler(t *testing.T) {
 
 func TestRemoteWSTicketFailsClosedWithoutHostIdentity(t *testing.T) {
 	deps := testDeps()
+	deps.mutationAuthorizer = testMutationAuthorizer{}
 	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
@@ -575,7 +578,9 @@ func (c *authTestCloser) Close() error {
 }
 
 func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T) {
-	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, testDeps())
+	deps := testDeps()
+	deps.mutationAuthorizer = testMutationAuthorizer{}
+	app, err := NewAppWithDeps(Config{InsecureLocalOnly: false}, deps)
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -599,7 +604,7 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 
 	p1, ticket1 := issueGrant()
 	closer1 := &authTestCloser{done: make(chan struct{})}
-	app.connRegistry.Register(p1.DeviceID, closer1)
+	_ = app.connRegistry.Register(p1.DeviceID, uint64(p1.DeviceEpoch), closer1)
 	_, _, _, err = app.sessionMgr.CreateAfterVerifiedChallenge(
 		p1.DeviceID, p1.HostID, app.sessionMgr.BootID(), []string{devicetrust.PermSessionsRead}, 0,
 	)
@@ -626,7 +631,7 @@ func TestRemoteReplacementAndRevokeInvalidateTicketsAndConnections(t *testing.T)
 	}())
 	ticket2, _, _ := app.wsTickets.Issue(p2, "host", "session")
 	closer2 := &authTestCloser{done: make(chan struct{})}
-	app.connRegistry.Register(p2.DeviceID, closer2)
+	_ = app.connRegistry.Register(p2.DeviceID, uint64(p2.DeviceEpoch), closer2)
 	app.sessionMgr.RevokeDevice(p2.DeviceID)
 	select {
 	case <-closer2.done:

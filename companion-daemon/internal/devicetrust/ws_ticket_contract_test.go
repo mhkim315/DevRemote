@@ -29,7 +29,7 @@ func TestWSTicket_ExactExpiryAndDefensivePermissions(t *testing.T) {
 	m := NewPermissiveSessionManager("boot", time.Minute)
 	p, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	p.BearerExpires = time.Now().UTC().Add(20 * time.Millisecond)
-	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 3, MaxTotal: 3})
+	s := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 3, MaxTotal: 3})
 	raw, expiresAt, err := s.Issue(p, "host", "session")
 	if err != nil {
 		t.Fatalf("issue: %v", err)
@@ -45,7 +45,7 @@ func TestWSTicket_ExactExpiryAndDefensivePermissions(t *testing.T) {
 }
 
 func TestWSTicket_ExpiredAuthorizationIsNotIssued(t *testing.T) {
-	s := NewWSTicketStore()
+	s := NewWSTicketStore(testMutationAuthorizer{})
 	p := &Principal{
 		DeviceID: "device", HostID: "host", BearerSessionID: "bearer",
 		BearerExpires: time.Now().UTC().Add(-time.Second), Permissions: []string{PermSessionsRead},
@@ -59,7 +59,7 @@ func TestWSTicket_ExpiredAuthorizationIsNotIssued(t *testing.T) {
 }
 
 func TestHandleWSTicket_ReturnsStoredEffectiveExpiry(t *testing.T) {
-	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 2, MaxTotal: 2})
+	s := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{TTL: time.Minute, MaxPerDevice: 2, MaxTotal: 2})
 	expiresAt := time.Now().UTC().Add(10 * time.Second).Truncate(time.Microsecond)
 	p := &Principal{
 		DeviceID: "device", HostID: "host", BearerSessionID: "bearer",
@@ -88,7 +88,7 @@ func TestHandleWSTicket_ReturnsStoredEffectiveExpiry(t *testing.T) {
 func TestWSTicket_WrongBindingConsumesTicket(t *testing.T) {
 	m := NewPermissiveSessionManager("boot", time.Minute)
 	p, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
-	s := NewWSTicketStore()
+	s := NewWSTicketStore(testMutationAuthorizer{})
 	raw, _, err := s.Issue(p, "host", "session")
 	if err != nil {
 		t.Fatalf("issue: %v", err)
@@ -103,7 +103,7 @@ func TestWSTicket_WrongBindingConsumesTicket(t *testing.T) {
 
 func TestWSTicket_BearerReplacementAndRevokeInvalidate(t *testing.T) {
 	m := NewPermissiveSessionManager("boot", time.Minute)
-	s := NewWSTicketStore()
+	s := NewWSTicketStore(testMutationAuthorizer{})
 	p1, _ := newTicketPrincipal(t, m, "device", "host", []string{PermSessionsRead})
 	raw1, _, _ := s.Issue(p1, "host", "session")
 	_, _, _, err := m.CreateAfterVerifiedChallenge("device", "host", "boot", []string{PermSessionsRead}, 0)
@@ -126,7 +126,7 @@ func TestWSTicket_BearerReplacementAndRevokeInvalidate(t *testing.T) {
 }
 
 func TestWSTicket_CapacityIsAtomicAndExpiredTicketsReleaseIt(t *testing.T) {
-	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{
+	s := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{
 		TTL: time.Minute, MaxPerDevice: 3, MaxTotal: 3,
 	})
 	p := &Principal{
@@ -151,7 +151,7 @@ func TestWSTicket_CapacityIsAtomicAndExpiredTicketsReleaseIt(t *testing.T) {
 		t.Fatalf("successes=%d count=%d want 3/3", successes.Load(), s.Count())
 	}
 
-	expiring := NewWSTicketStoreWithConfig(WSTicketStoreConfig{
+	expiring := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{
 		TTL: time.Millisecond, MaxPerDevice: 1, MaxTotal: 1,
 	})
 	if _, _, err := expiring.Issue(p, "host", "session"); err != nil {
@@ -167,7 +167,7 @@ func TestWSTicket_CapacityIsAtomicAndExpiredTicketsReleaseIt(t *testing.T) {
 }
 
 func TestWSTicket_GlobalCapacityAcrossDevices(t *testing.T) {
-	s := NewWSTicketStoreWithConfig(WSTicketStoreConfig{
+	s := NewWSTicketStoreWithConfig(testMutationAuthorizer{}, WSTicketStoreConfig{
 		TTL: time.Minute, MaxPerDevice: 3, MaxTotal: 2,
 	})
 	principal := func(deviceID string) *Principal {

@@ -158,17 +158,11 @@ func TestEpochLock_PromptBarrier(t *testing.T) {
 // its epoch callback under the transport lock before writing any bytes.
 func TestEpochLock_InputBarrier(t *testing.T) {
 	var out bytes.Buffer
-	transport := newTerminalTransport("controlled_pty:epoch-input", 1, &out, nil, nil)
 	currentEpoch := int64(0)
+	transport := newTerminalTransport("controlled_pty:epoch-input", 1, &out, nil, nil, barrierMutationAuthorizer{current: &currentEpoch, calls: new(int)})
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	check := func() error {
-		return barrierMutationAuthorizer{current: &currentEpoch, calls: new(int)}.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentWSInput)
-	}
-	if err := check(); err != nil { // handler preflight
-		t.Fatalf("preflight: %v", err)
-	}
 	currentEpoch = 1
-	written, err := transport.WriteInput([]byte("blocked\n"), check)
+	written, err := transport.WriteInput([]byte("blocked\n"), principal.DeviceID, uint64(principal.DeviceEpoch))
 	if written != 0 || err == nil {
 		t.Fatalf("stale input write = (%d, %v), want rejection", written, err)
 	}

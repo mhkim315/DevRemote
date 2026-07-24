@@ -98,7 +98,7 @@ func TestPB5V1_StopUsesTypedSignalAndWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = o.Stop(context.Background(), id); err != nil {
+	if _, err = o.Stop(context.Background(), id, "test", 0); err != nil {
 		t.Fatal(err)
 	}
 	if h.signals != 1 || c.count() != 1 {

@@ -549,9 +549,7 @@ func (rt *codexManagedRuntime) submitPrompt(text string, deviceID string, device
 	rt.nextID++
 	id := rt.nextID
 	rt.pendingReq = id
-	// Keep turnMu held through the provider write so the authorization and
-	// prompt mutation share one linearization boundary.
-
+	rt.turnMu.Unlock()
 	err := rt.send(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "turn/start",
 		"params": map[string]any{
@@ -561,12 +559,12 @@ func (rt *codexManagedRuntime) submitPrompt(text string, deviceID string, device
 		},
 	})
 	if err != nil {
+		rt.turnMu.Lock()
 		rt.turnActive = false
 		rt.pendingReq = 0
 		rt.turnMu.Unlock()
 		return fmt.Errorf("prompt delivery: %w", err)
 	}
-	rt.turnMu.Unlock()
 	return nil
 }
 
@@ -811,18 +809,28 @@ func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text s
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Service-owned request admission is followed by the runtime turn-lock
+	// commit check in submitPrompt. Keeping both checks ensures a revoke that
+	// wins between handler admission and the mutation cannot reach the provider.
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	rt := s.runtimes[sessionID]
 	if rt == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("managed session not found")
 	}
 	if rt.epoch != epoch {
+		s.mu.Unlock()
 		return fmt.Errorf("stale session epoch")
 	}
 	rec, ok := s.reg.Get(sessionID)
 	if !ok || rec.Exited {
+		s.mu.Unlock()
 		return fmt.Errorf("managed session closed")
 	}
+	s.mu.Unlock()
 	return rt.submitPrompt(text, deviceID, deviceEpoch)
 }
 
@@ -997,10 +1005,10 @@ func (s *ManagedCodexService) createAuthorized(cwd string, certification bool, d
 	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
 		return "", err
 	}
-	return s.create(cwd, certification)
+	return s.create(cwd, certification, deviceID, deviceEpoch)
 }
 
-func (s *ManagedCodexService) create(cwd string, certification bool) (string, error) {
+func (s *ManagedCodexService) create(cwd string, certification bool, deviceID string, deviceEpoch uint64) (string, error) {
 	if err := validateCWD(cwd); err != nil {
 		return "", err
 	}
@@ -1018,6 +1026,20 @@ func (s *ManagedCodexService) create(cwd string, certification bool) (string, er
 	if lease.isCancelled() {
 		return "", fmt.Errorf("managed codex service is shutting down")
 	}
+	s.barrier("pre-spawn")
+	// The provider launch is the create side effect. Recheck at the service
+	// commit boundary after the pre-spawn pause and immediately before crossing
+	// into launcher I/O.
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return "", fmt.Errorf("managed codex service is shutting down")
+	}
+	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+		s.mu.Unlock()
+		return "", err
+	}
+	s.mu.Unlock()
 	proc, err := s.launcher.Launch(s.cfg.Bin, []string{"app-server", "--stdio"})
 	if err != nil {
 		return "", fmt.Errorf("managed codex launch: %w", err)
