@@ -74,6 +74,16 @@ func (v *rejectingQRVerifier) Verify(string, string, string, string, string) err
 	return fmt.Errorf("QR mismatch")
 }
 
+type recordingQRVerifier struct {
+	calls int
+	err   error
+}
+
+func (v *recordingQRVerifier) Verify(string, string, string, string, string) error {
+	v.calls++
+	return v.err
+}
+
 func TestPairing_QRVerificationPreProof(t *testing.T) {
 	r, _ := newReg(t)
 	id := newTestId("qr-pre-proof")
@@ -87,8 +97,9 @@ func TestPairing_QRVerificationPreProof(t *testing.T) {
 	}
 	defer ph.Close()
 
+	_, pubDER, _ := genKeypair(t)
 	body, _ := json.Marshal(PairingRequest{
-		PublicKeyDER: []byte("malformed-key"), BootstrapToken: ph.Session.BootstrapToken,
+		PublicKeyDER: pubDER, PhoneNonce: make([]byte, 16), BootstrapToken: ph.Session.BootstrapToken,
 		QRHostID: "host", QRDaemonBootID: "boot", QRChallengeID: "challenge", QRExpiresAt: ph.Session.ExpiresAt.Format(time.RFC3339),
 	})
 	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
@@ -107,6 +118,112 @@ func TestPairing_QRVerificationPreProof(t *testing.T) {
 	}
 	if got := len(r.List()); got != 0 {
 		t.Fatalf("QR-rejected pairing registered %d devices", got)
+	}
+}
+
+func TestPairing_WrongBootstrapDoesNotInvokeQRVerifier(t *testing.T) {
+	r, _ := newReg(t)
+	id := newTestId("qr-bootstrap")
+	verifier := &recordingQRVerifier{}
+	ph, err := StartPairing(PairingConfig{
+		Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second,
+		Identity: id, Signer: id, Registry: r, QRVerifier: verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ph.Close()
+	_, pubDER, _ := genKeypair(t)
+	post := func(bootstrap, host string) *http.Response {
+		t.Helper()
+		body, _ := json.Marshal(PairingRequest{
+			PublicKeyDER: pubDER, PhoneNonce: make([]byte, 16), BootstrapToken: bootstrap,
+			QRHostID: host, QRDaemonBootID: "boot", QRChallengeID: "challenge",
+			QRExpiresAt: ph.Session.ExpiresAt.Format(time.RFC3339),
+		})
+		resp, postErr := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
+		if postErr != nil {
+			t.Fatal(postErr)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	if resp := post("wrong-bootstrap", "mismatch"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong bootstrap status=%d", resp.StatusCode)
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("QR verifier calls after wrong bootstrap=%d, want 0", verifier.calls)
+	}
+	ph.mu.Lock()
+	state := ph.state
+	ph.mu.Unlock()
+	if state != pairStatePending {
+		t.Fatalf("wrong bootstrap changed session state to %s", state)
+	}
+	if resp := post(ph.Session.BootstrapToken, "legitimate"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("legitimate retry status=%d", resp.StatusCode)
+	}
+	if verifier.calls != 1 {
+		t.Fatalf("QR verifier calls after legitimate retry=%d, want 1", verifier.calls)
+	}
+}
+
+func TestPairing_RightBootstrapQRMismatchRejectsBeforeProof(t *testing.T) {
+	r, _ := newReg(t)
+	id := newTestId("qr-mismatch")
+	verifier := &rejectingQRVerifier{}
+	ph, err := StartPairing(PairingConfig{
+		Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second,
+		Identity: id, Signer: id, Registry: r, QRVerifier: verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ph.Close()
+	_, pubDER, _ := genKeypair(t)
+	body, _ := json.Marshal(PairingRequest{
+		PublicKeyDER: pubDER, PhoneNonce: make([]byte, 16), BootstrapToken: ph.Session.BootstrapToken,
+		QRHostID: "wrong", QRDaemonBootID: "boot", QRChallengeID: "challenge",
+		QRExpiresAt: ph.Session.ExpiresAt.Format(time.RFC3339),
+	})
+	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || verifier.calls != 1 {
+		t.Fatalf("QR mismatch status=%d calls=%d", resp.StatusCode, verifier.calls)
+	}
+	if _, ok := ph.WaitForCandidate(); ok {
+		t.Fatal("QR mismatch reached proof/approval path")
+	}
+}
+
+func TestPairing_RightBootstrapRightQRContinues(t *testing.T) {
+	r, _ := newReg(t)
+	id := newTestId("qr-match")
+	verifier := &recordingQRVerifier{}
+	ph, err := StartPairing(PairingConfig{
+		Listen: "0.0.0.0:0", LANAddr: "127.0.0.1", SessionLifetime: 5 * time.Second,
+		Identity: id, Signer: id, Registry: r, QRVerifier: verifier,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ph.Close()
+	_, pubDER, _ := genKeypair(t)
+	body, _ := json.Marshal(PairingRequest{
+		PublicKeyDER: pubDER, PhoneNonce: make([]byte, 16), BootstrapToken: ph.Session.BootstrapToken,
+		QRHostID: ph.Session.HostID, QRDaemonBootID: "boot", QRChallengeID: "challenge",
+		QRExpiresAt: ph.Session.ExpiresAt.Format(time.RFC3339),
+	})
+	resp, err := http.Post("http://"+ph.addr+"/pair", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || verifier.calls != 1 {
+		t.Fatalf("QR match status=%d calls=%d", resp.StatusCode, verifier.calls)
 	}
 }
 

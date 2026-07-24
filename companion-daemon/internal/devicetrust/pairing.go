@@ -258,21 +258,6 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	// QR binding is the pre-proof boundary. A mismatch consumes/fails the
-	// one-shot bridge challenge and terminates this pairing session before the
-	// candidate key is parsed, a host nonce is issued, or any proof is signed.
-	if verifier := ph.cfg.QRVerifier; verifier != nil {
-		if err := verifier.Verify(ph.Session.SessionID, req.QRHostID, req.QRDaemonBootID, req.QRChallengeID, req.QRExpiresAt); err != nil {
-			ph.mu.Lock()
-			if ph.state == pairStatePending {
-				ph.state = pairStateRejected
-			}
-			ph.mu.Unlock()
-			ph.signalDone()
-			http.Error(w, "QR binding verification failed", http.StatusUnauthorized)
-			return
-		}
-	}
 	if _, err := ParseP256PublicKey(req.PublicKeyDER); err != nil {
 		http.Error(w, "invalid public key", http.StatusBadRequest)
 		return
@@ -286,6 +271,22 @@ func (ph *PairingHost) handleCandidate(w http.ResponseWriter, r *http.Request) {
 	if subtle.ConstantTimeCompare([]byte(req.BootstrapToken), []byte(ph.Session.BootstrapToken)) != 1 {
 		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
 		return
+	}
+	// QR binding is the pre-proof boundary, but only after the bootstrap
+	// secret has authenticated the candidate. A metadata mismatch consumes/fails
+	// the one-shot bridge challenge; a request without the secret cannot consume
+	// it or preempt the pending session.
+	if verifier := ph.cfg.QRVerifier; verifier != nil {
+		if err := verifier.Verify(ph.Session.SessionID, req.QRHostID, req.QRDaemonBootID, req.QRChallengeID, req.QRExpiresAt); err != nil {
+			ph.mu.Lock()
+			if ph.state == pairStatePending {
+				ph.state = pairStateRejected
+			}
+			ph.mu.Unlock()
+			ph.signalDone()
+			http.Error(w, "QR binding verification failed", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	ph.mu.Lock()
