@@ -35,6 +35,17 @@
     "plugins": [
       "./plugins/withCleartextTraffic",
       [
+        "expo-build-properties",
+        {
+          "android": {
+            "gradleVersion": "8.13",
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.1.0"
+          }
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/notification-icon.png",

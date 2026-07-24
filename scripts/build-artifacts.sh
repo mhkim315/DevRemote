@@ -106,6 +106,21 @@ DAEMON_DIRTY=$(go version -m "$ARTIFACT_DIR/pokit-daemon" | grep 'vcs.modified=t
 DAEMON_SHA256=$(shasum -a 256 "$ARTIFACT_DIR/pokit-daemon" | awk '{print $1}')
 echo "  Daemon OK: SHA256=$DAEMON_SHA256"
 
+# ── Stage 6b: Validate Gradle wrapper ──
+
+echo "[6b/7] Validating Gradle wrapper..."
+WRAPPER_PROPS="mobile/android/gradle/wrapper/gradle-wrapper.properties"
+grep -q 'gradle-8.13' "$WRAPPER_PROPS" || { echo "FATAL: Gradle wrapper is not 8.13" >&2; exit 1; }
+
+# Verify foojay-resolver is present and compatible (Gradle 8.13 + foojay 0.5.0)
+SETTINGS="mobile/android/settings.gradle"
+grep -q 'foojay-resolver' "$SETTINGS" || echo "  NOTE: foojay-resolver not in project settings (handled by RN plugin)"
+
+# Verify JDK toolchain in build.gradle
+BUILD_GRADLE="mobile/android/build.gradle"
+grep -q 'jvmToolchain' "$BUILD_GRADLE" 2>/dev/null || echo "  NOTE: no explicit jvmToolchain in build.gradle (using JAVA_HOME)"
+echo "  Gradle wrapper OK"
+
 # ── Stage 7: Build APK ──
 
 echo "[7/7] Building APK..."
