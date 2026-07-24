@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/transcript"
 )
 
@@ -69,7 +70,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		if cwd == "" {
 			cwd = "/"
 		}
-		id, err := h.ManagedClaude.CreateDetached(cwd)
+		p := devicetrust.PrincipalFromContext(r.Context())
+		auth := MutationAuthorization{Authorizer: h.Authorizer}
+		if p != nil {
+			auth.DeviceID, auth.DeviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+		}
+		id, err := h.ManagedClaude.CreateDetached(cwd, auth)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -113,7 +119,12 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 		json.NewEncoder(w).Encode(SessionLifecycle{Adapter: adapter, ProfileID: req.ProfileID, Name: req.Name, State: LifecycleFailed})
 		return
 	}
-	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), cfg, req.ProfileID, req.Name)
+	p := devicetrust.PrincipalFromContext(r.Context())
+	auth := MutationAuthorization{Authorizer: h.Authorizer}
+	if p != nil {
+		auth.DeviceID, auth.DeviceEpoch = p.DeviceID, uint64(p.DeviceEpoch)
+	}
+	canonicalID, err := h.Lifecycle.OwnedPTY().Create(r.Context(), cfg, req.ProfileID, req.Name, auth)
 	if err != nil {
 		// Never expose running on startup failure; the runtime was cleaned up.
 		w.Header().Set("Content-Type", "application/json")

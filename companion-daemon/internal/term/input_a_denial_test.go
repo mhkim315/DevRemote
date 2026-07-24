@@ -153,6 +153,7 @@ func TestInputA_DenialViaHandleWS(t *testing.T) {
 	transcriptSvc := transcript.NewService(transcript.DefaultStoreConfig())
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
+		Authorizer:   localMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,

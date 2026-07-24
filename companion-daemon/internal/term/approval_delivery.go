@@ -8,6 +8,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"devremote/companion-daemon/internal/devicetrust"
 	"devremote/companion-daemon/internal/sessionid"
 )
 
@@ -79,12 +80,10 @@ func deliveryProvesNonAcceptance(o DeliveryOutcome) bool {
 // ApprovalDeliveryRequest carries the claim token, immutable binding, and the exact
 // server-computed payload bytes.
 type ApprovalDeliveryRequest struct {
-	ClaimToken string
-	Binding    ApprovalExecutionBinding
-	Payload    []byte
-	// EpochRecheck is invoked by each daemon-owned delivery boundary while its
-	// mutation lock is held, immediately before accepting/writing the action.
-	EpochRecheck func() error
+	ClaimToken    string
+	Binding       ApprovalExecutionBinding
+	Payload       []byte
+	Authorization MutationAuthorization
 }
 
 // DeliveryReceipt is the immutable, fully-bound result of a delivery attempt.
@@ -511,10 +510,8 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if req.EpochRecheck != nil {
-		if err := req.EpochRecheck(); err != nil {
-			return DeliveryReceipt{}, "", false
-		}
+	if err := req.Authorization.authorize(devicetrust.IntentApprovalDeliver); err != nil {
+		return DeliveryReceipt{}, "", false
 	}
 
 	// R8-A: canonical metadata validation — every variable-length field, digest

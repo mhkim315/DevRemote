@@ -11,6 +11,7 @@ import (
 
 	"devremote/companion-daemon/internal/agent"
 	"devremote/companion-daemon/internal/agent/contract"
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 // A1-B (+ R2/R3 remediation) — generation-bound authoritative ApprovalStore.
@@ -139,13 +140,21 @@ type sessionApprovals struct {
 
 // AuthoritativeApprovalStore is the generation-bound approval record + claim store.
 type AuthoritativeApprovalStore struct {
-	mu       sync.Mutex
-	sessions map[string]*sessionApprovals
-	now      func() time.Time
+	mu         sync.Mutex
+	sessions   map[string]*sessionApprovals
+	now        func() time.Time
+	authorizer devicetrust.MutationAuthorizer
 }
 
-func NewAuthoritativeApprovalStore() *AuthoritativeApprovalStore {
-	return &AuthoritativeApprovalStore{sessions: make(map[string]*sessionApprovals), now: time.Now}
+func NewAuthoritativeApprovalStore(authorizers ...devicetrust.MutationAuthorizer) *AuthoritativeApprovalStore {
+	authorizer := devicetrust.MutationAuthorizer(localMutationAuthorizer{})
+	if len(authorizers) > 0 {
+		if authorizers[0] == nil {
+			return nil
+		}
+		authorizer = authorizers[0]
+	}
+	return &AuthoritativeApprovalStore{sessions: make(map[string]*sessionApprovals), now: time.Now, authorizer: authorizer}
 }
 
 func genNewer(launchA int64, streamA int, launchB int64, streamB int) bool {
@@ -647,15 +656,6 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The handler's preflight check is intentionally not sufficient: revoke may
-	// occur after it returns. Recheck inside the store lock immediately before
-	// any claim transition so a stale bearer cannot acquire execution authority.
-	if req.EpochRecheck != nil {
-		if err := req.EpochRecheck(); err != nil {
-			return ClaimResult{Outcome: ClaimStaleEpoch}
-		}
-	}
-
 	sess := s.sessions[req.SessionID]
 	if sess == nil {
 		return ClaimResult{Outcome: ClaimNotFound}
@@ -722,6 +722,11 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	}
 	if rec.superseded {
 		return ClaimResult{Outcome: ClaimStaleRuntime}
+	}
+	// Approval claim authorization is evaluated by the store while its
+	// mutation lock is held, immediately before any claim transition.
+	if err := s.authorizer.AuthorizeCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim); err != nil {
+		return ClaimResult{Outcome: ClaimStaleEpoch}
 	}
 
 	// Idempotent replay — only after the authority checks above passed.
@@ -796,7 +801,7 @@ type DeliveryCommit struct {
 // accepted/already_accepted with an opaque ReceiptID. A non-accepting outcome leaves
 // the record delivery_failed and retryable (bounded); an ambiguous or superseded
 // case is non-retryable. Substituted bytes (payload-digest mismatch) never commit.
-func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt, epochRecheck ...func() error) DeliveryCommit {
+func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) DeliveryCommit {
 	b := receipt.Binding
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -814,13 +819,10 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt, epo
 	if receipt.ClaimToken != rec.claimToken || !b.equal(rec.binding) {
 		return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
 	}
-	// RecordDelivery is the approval commit boundary. Keep this callback inside
-	// the store lock so a revoke observed here rejects the commit without
-	// changing the accepted state.
-	if len(epochRecheck) > 0 && epochRecheck[0] != nil {
-		if err := epochRecheck[0](); err != nil {
-			return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
-		}
+	// Approval commit authorization is evaluated by the store while its
+	// mutation lock is held, immediately before changing the accepted state.
+	if err := s.authorizer.AuthorizeCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit); err != nil {
+		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
 	}
 	now := s.now()
 	if rec.superseded {

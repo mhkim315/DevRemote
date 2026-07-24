@@ -78,7 +78,7 @@ func newInputBWSFixture(t *testing.T, writer *inputBWriter) *inputBWSFixture {
 		t.Fatal("device session did not authenticate")
 	}
 	tickets := devicetrust.NewWSTicketStore()
-	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil), WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity}
+	h := &Handlers{Lifecycle: NewLifecycleService(owned, nil), Authorizer: localMutationAuthorizer{}, WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity}
 	srv := httptest.NewServer(http.HandlerFunc(h.HandleWS))
 	t.Cleanup(srv.Close)
 	return &inputBWSFixture{server: srv, tickets: tickets, principal: principal, hostID: identity.HostID, session: session, generation: generation}

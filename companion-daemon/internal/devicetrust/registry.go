@@ -269,13 +269,16 @@ func (r *DeviceRegistry) GetAuth(deviceID string) AuthorizationState {
 type MutationIntent string
 
 const (
-	IntentSessionStop   MutationIntent = "session:stop"
-	IntentSessionKill   MutationIntent = "session:kill"
-	IntentSessionDelete MutationIntent = "session:delete"
-	IntentSessionCreate MutationIntent = "session:create"
-	IntentApproval      MutationIntent = "approval"
-	IntentPrompt        MutationIntent = "prompt"
-	IntentWSInput       MutationIntent = "ws:input"
+	IntentSessionStop     MutationIntent = "session:stop"
+	IntentSessionKill     MutationIntent = "session:kill"
+	IntentSessionDelete   MutationIntent = "session:delete"
+	IntentSessionCreate   MutationIntent = "session:create"
+	IntentWSInput         MutationIntent = "ws:input"
+	IntentCmd             MutationIntent = "cmd"
+	IntentApprovalClaim   MutationIntent = "approval:claim"
+	IntentApprovalDeliver MutationIntent = "approval:deliver"
+	IntentApprovalCommit  MutationIntent = "approval:commit"
+	IntentPrompt          MutationIntent = "prompt"
 )
 
 // MutationAuthorizer is the single mandatory authorization boundary for every

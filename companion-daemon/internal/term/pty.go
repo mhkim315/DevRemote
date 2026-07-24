@@ -65,7 +65,7 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// M1 safe create: profileId present -> daemon-owned launch. The daemon
 		// generates the canonical ID and resolves the executable by policy.
 		if req.ProfileID != "" {
-			if err := h.epochGuard(r); err != nil {
+			if err := h.authorizeRequest(r, devicetrust.IntentSessionCreate); err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
@@ -109,6 +109,10 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 					writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 					return
 				}
+				if err := h.authorizeRequest(r, devicetrust.IntentSessionDelete); err != nil {
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				}
 				p := devicetrust.PrincipalFromContext(r.Context())
 				var deviceID string
 				var deviceEpoch uint64
@@ -133,28 +137,29 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", 405)
 }
 
-// epochGuard validates the request principal's epoch via the MutationAuthorizer.
-// Nil principal / nil authorizer → no-op (insecure-local / test path).
-func (h *Handlers) epochGuard(r *http.Request) error {
+// authorizeRequest validates the request principal at the exact mutation
+// boundary. A missing principal is the explicitly unauthenticated local mode;
+// a principal always goes through the mandatory authorizer.
+func (h *Handlers) authorizeRequest(r *http.Request, intent devicetrust.MutationIntent) error {
 	p := devicetrust.PrincipalFromContext(r.Context())
 	if p == nil {
 		return nil
 	}
 	if h.Authorizer == nil {
-		return nil
+		return fmt.Errorf("mutation authorizer unavailable")
 	}
-	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), devicetrust.IntentWSInput)
+	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
 
-// epochGuardPrincipal validates a WebSocket principal's epoch.
-func (h *Handlers) epochGuardPrincipal(p *devicetrust.Principal) error {
+// authorizePrincipal validates a WebSocket principal at a mutation boundary.
+func (h *Handlers) authorizePrincipal(p *devicetrust.Principal, intent devicetrust.MutationIntent) error {
 	if p == nil {
 		return nil
 	}
 	if h.Authorizer == nil {
-		return nil
+		return fmt.Errorf("mutation authorizer unavailable")
 	}
-	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), devicetrust.IntentWSInput)
+	return h.Authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), intent)
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -471,12 +476,12 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// A frame above the raw protocol bound cannot be safely dispatched by
 			// a partial parse. Return the closed oversized result directly.
 			if len(msg) > inputMaxRawFrame {
-				wsErr := h.epochGuardPrincipal(ticketPrincipal)
+				wsErr := h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
 				if wsErr != nil {
 					continue
 				}
 				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return nil
+					return h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
 				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
@@ -489,12 +494,12 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// the partially decoded request on unknown/trailing JSON, so malformed
 			// terminal_input is rejected rather than silently ignored by dispatch.
 			if req, _, _ := parseInputControlRequest(msg); req != nil && req.Type == "terminal_input" {
-				wsErr := h.epochGuardPrincipal(ticketPrincipal)
+				wsErr := h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
 				if wsErr != nil {
 					continue
 				}
 				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return nil
+					return h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
 				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
@@ -548,7 +553,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 		// A ticket remains bound to its device for the lifetime of this socket,
 		// so revoke/rebind must be checked immediately before raw input delivery.
-		err = h.epochGuardPrincipal(ticketPrincipal)
+		err = h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput)
 		if err != nil {
 			if time.Since(lastDenial) > time.Second {
 				select {
@@ -566,7 +571,10 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				break
 			}
 			written, inErr := inputTransport.WriteInput(msg, func() error {
-				// epoch validated by epochGuardPrincipal above
+				if err := h.authorizePrincipal(ticketPrincipal, devicetrust.IntentWSInput); err != nil {
+					return err
+				}
+				// The transport callback preserves transcript/write ordering.
 				// PA3 Step 6b/T3: begin echo suppression under the same
 				// transport lock and immediately before the PTY write.
 				if h.Transcript != nil {
@@ -839,11 +847,11 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		// The command broker is a remote terminal-input mutation. Guard the
 		// enqueue boundary as well as the WebSocket transport path.
-		if err := h.epochGuard(r); err != nil {
+		body, _ := io.ReadAll(r.Body)
+		if err := h.authorizeRequest(r, devicetrust.IntentCmd); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
 		h.Cmds.Put(session, body)
 		log.Printf("CMD POST [%s]: %q", session, string(body))
 		w.WriteHeader(200)

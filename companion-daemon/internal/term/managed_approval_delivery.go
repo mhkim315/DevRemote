@@ -33,6 +33,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 const (
@@ -341,12 +343,10 @@ func (rt *codexManagedRuntime) deliverResponse(req ApprovalDeliveryRequest, payl
 			return fail(DeliveryRejected) // provider resolved: zero writes
 		}
 	}
-	if req.EpochRecheck != nil {
-		if err := req.EpochRecheck(); err != nil {
-			delete(rt.respWaiters, pend.idInt)
-			rt.respMu.Unlock()
-			return fail(DeliveryStaleRuntime)
-		}
+	if err := req.Authorization.authorize(devicetrust.IntentApprovalDeliver); err != nil {
+		delete(rt.respWaiters, pend.idInt)
+		rt.respMu.Unlock()
+		return fail(DeliveryStaleRuntime)
 	}
 	w.state = waiterStateWriteClaimed
 	rt.respMu.Unlock()

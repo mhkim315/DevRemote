@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -111,6 +112,42 @@ type Dependencies struct {
 	OpenTimelineShadow func(writer.Config, writer.ProducerAuth) (*writer.Writer, error)
 }
 
+// compositionMutationAuthorizer gives every mutation owner a non-nil
+// constructor dependency before Run, then atomically binds the persistent
+// registry before the listener starts. Dependency-injected composition tests
+// may exercise the mux before Run; that intentionally remains local-only until
+// the daemon has bound its persistent trust root.
+type compositionMutationAuthorizer struct {
+	mu     sync.RWMutex
+	target devicetrust.MutationAuthorizer
+	ready  bool
+}
+
+func (a *compositionMutationAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
+	// An empty device ID is the explicit local-only path. Remote principals
+	// always carry a non-empty ID and are checked against the persistent registry.
+	if deviceID == "" {
+		return nil
+	}
+	a.mu.RLock()
+	target, ready := a.target, a.ready
+	a.mu.RUnlock()
+	if !ready {
+		return nil
+	}
+	if target == nil {
+		return fmt.Errorf("device mutation authorizer unavailable")
+	}
+	return target.AuthorizeCommit(deviceID, epoch, intent)
+}
+
+func (a *compositionMutationAuthorizer) bind(target devicetrust.MutationAuthorizer) {
+	a.mu.Lock()
+	a.target = target
+	a.ready = true
+	a.mu.Unlock()
+}
+
 // ── tunnelProc: production tunnelResource ──
 
 type tunnelProc struct {
@@ -148,6 +185,7 @@ type App struct {
 	managedClaude      *term.ManagedClaudeService // C1D: native managed Claude runtime (nil unless enabled)
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
+	mutationAuthorizer *compositionMutationAuthorizer
 	authHandler        *devicetrust.AuthHandler               // M2.5-3
 	sessionMgr         *devicetrust.DeviceSessionManager      // M2.5-3
 	wsTickets          *devicetrust.WSTicketStore             // M2.5-4
@@ -196,12 +234,19 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		}
 	}()
 
+	hostIdentity, deviceRegistry := initDeviceTrust()
+	compositionAuth := &compositionMutationAuthorizer{target: deviceRegistry}
+	var authorizer devicetrust.MutationAuthorizer = compositionAuth
+
 	cmds := deps.Cmds
 	if cmds == nil {
 		cmds = term.NewCommandBroker()
 	}
 	// Phase A9: approval tracking.
-	approvals := term.NewApprovalStore()
+	approvals := term.NewApprovalStore(authorizer)
+	if approvals == nil {
+		return nil, fmt.Errorf("approval mutation authorizer unavailable")
+	}
 
 	// 2. Handlers carry dependencies as visible struct fields (no context injection).
 	verifier := deps.Verifier
@@ -254,8 +299,8 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// controlled-PTY launch + generation-bound lifecycle (temporary mux spawn
 	// seam until PA2d); the LifecycleService is a pure dispatcher with no
 	// Registry dependency. Provider owners are wired below once constructed.
-	ownedPTY := term.NewOwnedPTYRuntime(term.NewNativePTYLauncher(), transcriptSvc)
-	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc)
+	ownedPTY := term.NewOwnedPTYRuntime(term.NewNativePTYLauncher(), transcriptSvc, authorizer)
+	lifecycle := term.NewLifecycleService(ownedPTY, transcriptSvc, authorizer)
 
 	// SP0: native managed Codex runtime — default-off. The service owns the
 	// pinned launcher, the owned-session registry, and every managed child.
@@ -264,8 +309,14 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if cfg.EnableManagedCodex {
 		if deps.Managed != nil {
 			managed = deps.Managed
+			if err := managed.SetMutationAuthorizer(authorizer); err != nil {
+				return nil, err
+			}
 		} else {
-			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil)
+			managed = term.NewManagedCodexService(term.PinnedConfig0x144(), nil, authorizer)
+			if managed == nil {
+				return nil, fmt.Errorf("managed codex mutation authorizer unavailable")
+			}
 		}
 		// SP1-P1/P2B-R1: configure the ONE canonical approval store. The store
 		// is immutable after configuration/installation/first runtime; a
@@ -286,12 +337,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	if cfg.EnableManagedClaude {
 		if deps.ManagedClaude != nil {
 			managedClaude = deps.ManagedClaude
+			if err := managedClaude.SetMutationAuthorizer(authorizer); err != nil {
+				return nil, err
+			}
 		} else {
 			cc := term.PinnedClaudeConfig()
 			if cfg.ClaudeDigest != "" {
 				cc = term.PinnedClaudeConfigWithDigest(cfg.ClaudeDigest)
 			}
-			managedClaude = term.NewManagedClaudeService(cc, nil, nil)
+			managedClaude = term.NewManagedClaudeService(cc, nil, nil, authorizer)
+			if managedClaude == nil {
+				return nil, fmt.Errorf("managed claude mutation authorizer unavailable")
+			}
 		}
 		// C1D: configure the ONE canonical approval store as the non-actionable
 		// observation sink. Same immutability contract as Codex.
@@ -340,6 +397,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		sessionCfg.BootID = bootID
 	}
 	sessionMgr := devicetrust.NewDeviceSessionManagerWithConfig(sessionCfg)
+	if deviceRegistry != nil {
+		sessionMgr.GetAuth = deviceRegistry.GetAuth
+	}
 	ticketCfg := devicetrust.WSTicketStoreConfig{}
 	if deps.WSTicketConfig != nil {
 		ticketCfg = *deps.WSTicketConfig
@@ -368,8 +428,23 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	// ChallengeStore gate. It does not own device registration or sessions.
 	term.SetQRPairBridge(newQRPairBridge(challengeStore, sessionMgr.BootID()))
 
-	h := &term.Handlers{Verifier: verifier, Cmds: cmds, Approvals: approvals, InsecureLocalOnly: cfg.InsecureLocalOnly, Transcript: transcriptSvc, Lifecycle: lifecycle,
-		WSTickets: wsTickets, ConnRegistry: connRegistry, SessionMgr: sessionMgr, Authorizer: nil, HostIdentity: nil, Audit: audit, Managed: managed, ManagedClaude: managedClaude}
+	h, err := term.NewHandlers(authorizer)
+	if err != nil {
+		return nil, err
+	}
+	h.Verifier = verifier
+	h.Cmds = cmds
+	h.Approvals = approvals
+	h.InsecureLocalOnly = cfg.InsecureLocalOnly
+	h.Transcript = transcriptSvc
+	h.Lifecycle = lifecycle
+	h.WSTickets = wsTickets
+	h.ConnRegistry = connRegistry
+	h.SessionMgr = sessionMgr
+	h.HostIdentity = nil
+	h.Audit = audit
+	h.Managed = managed
+	h.ManagedClaude = managedClaude
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is
 	// registered and the gate accepts nothing (returns `unavailable`, writes no
@@ -729,40 +804,43 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		}
 	}
 
-	return &App{
-		config:          cfg,
-		deps:            deps,
-		server:          &http.Server{Addr: addr, Handler: serveMux},
-		telemetry:       telemetry,
-		transcriptSvc:   transcriptSvc,
-		lifecycle:       lifecycle,
-		managed:         managed,
-		managedClaude:   managedClaude,
-		authHandler:     authH,
-		sessionMgr:      sessionMgr,
-		wsTickets:       wsTickets,
-		connRegistry:    connRegistry,
-		audit:           audit,
-		handlers:        h,
-		ipcPath:         "/tmp/pokit.sock",
-		timelineWriter:  timelineWriter,
-		projection:      timelineProjection,
-		workspaceLeases: workspaceLeases,
-		validationCheck: validationCheck,
-		validationStore: validationStore,
-		cockpitStore:    cockpitStore,
-		n1DeviceStore:   n1Devices,
-		n1Notifier:      n1Notifier,
-	}, nil
+	app = &App{
+		config:             cfg,
+		deps:               deps,
+		server:             &http.Server{Addr: addr, Handler: serveMux},
+		telemetry:          telemetry,
+		transcriptSvc:      transcriptSvc,
+		lifecycle:          lifecycle,
+		managed:            managed,
+		managedClaude:      managedClaude,
+		authHandler:        authH,
+		sessionMgr:         sessionMgr,
+		wsTickets:          wsTickets,
+		connRegistry:       connRegistry,
+		hostIdentity:       hostIdentity,
+		deviceRegistry:     deviceRegistry,
+		mutationAuthorizer: compositionAuth,
+		audit:              audit,
+		handlers:           h,
+		ipcPath:            "/tmp/pokit.sock",
+		timelineWriter:     timelineWriter,
+		projection:         timelineProjection,
+		workspaceLeases:    workspaceLeases,
+		validationCheck:    validationCheck,
+		validationStore:    validationStore,
+		cockpitStore:       cockpitStore,
+		n1DeviceStore:      n1Devices,
+		n1Notifier:         n1Notifier,
+	}
+	return app, nil
 }
 
 // Run starts all background resources and the HTTP server.
 // Blocks until ctx is cancelled, then shuts down gracefully.
 func (a *App) Run(ctx context.Context) error {
-	// M2.5-1: ensure the persistent host identity + device registry exist.
-	// No auth/pairing yet — this only bootstraps the trust root. The App owns
-	// the single instances so later phases have one source of truth.
-	a.hostIdentity, a.deviceRegistry = initDeviceTrust()
+	// M2.5-1: the persistent host identity and device registry were constructed
+	// before any mutation-owning service in NewAppWithDeps.
+	a.mutationAuthorizer.bind(a.deviceRegistry)
 	if a.hostIdentity != nil && a.deviceRegistry != nil {
 		term.SetPairingContext(a.hostIdentity, a.deviceRegistry)
 	}
@@ -770,17 +848,6 @@ func (a *App) Run(ctx context.Context) error {
 	// sessions issued under an old epoch (device was revoked/replaced).
 	if a.sessionMgr != nil && a.deviceRegistry != nil {
 		a.sessionMgr.GetAuth = a.deviceRegistry.GetAuth
-	}
-	// 9.4-D: wire MutationAuthorizer into Handlers + managed services so
-	// every mutation path validates device active+epoch under service lock.
-	if a.handlers != nil && a.deviceRegistry != nil {
-		a.handlers.Authorizer = a.deviceRegistry
-	}
-	if a.handlers != nil && a.handlers.Managed != nil && a.deviceRegistry != nil {
-		a.handlers.Managed.Authorizer = a.deviceRegistry
-	}
-	if a.handlers != nil && a.handlers.ManagedClaude != nil && a.deviceRegistry != nil {
-		a.handlers.ManagedClaude.Authorizer = a.deviceRegistry
 	}
 	// 9.4-D: wire GetAuth on the notification device store so push registration
 	// atomically validates active state + epoch before committing the binding.

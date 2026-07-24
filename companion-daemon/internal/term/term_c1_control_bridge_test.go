@@ -155,6 +155,7 @@ func newC1Fixture(t *testing.T) *c1Fixture {
 
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
+		Authorizer:   localMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -515,6 +516,7 @@ func TestTERM_C1_ViewerDeniedZeroPTYWrite(t *testing.T) {
 
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
+		Authorizer:   localMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -606,6 +608,7 @@ func TestTERM_C1_ViewerDeniedPasteThroughAcknowledgedInput(t *testing.T) {
 
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
+		Authorizer:   localMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,
@@ -703,6 +706,7 @@ func TestTERM_C1_ViewerDeniedCtrlCThroughAcknowledgedInput(t *testing.T) {
 
 	h := &Handlers{
 		Lifecycle:    NewLifecycleService(owned, nil),
+		Authorizer:   localMutationAuthorizer{},
 		WSTickets:    tickets,
 		SessionMgr:   sessions,
 		HostIdentity: identity,

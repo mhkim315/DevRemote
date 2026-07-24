@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"sort"
 	"unicode/utf8"
+
+	"devremote/companion-daemon/internal/devicetrust"
 )
 
 // A1 remediation 3 — execution-authority contract.
@@ -46,10 +48,29 @@ type ApprovalDeliveryMaterial struct {
 // body.
 type RequesterContext struct {
 	DeviceID        string
+	DeviceEpoch     uint64
 	HostID          string
 	BearerSessionID string
 	BootID          string
 	Permissions     []string
+}
+
+// MutationAuthorization is the immutable device authority captured by an
+// authenticated handler and carried to the exact approval mutation boundary.
+// The authorizer is mandatory in production; keeping the identity beside the
+// interface prevents a later lookup from accidentally authorizing a different
+// device or epoch.
+type MutationAuthorization struct {
+	Authorizer  devicetrust.MutationAuthorizer
+	DeviceID    string
+	DeviceEpoch uint64
+}
+
+func (a MutationAuthorization) authorize(intent devicetrust.MutationIntent) error {
+	if a.Authorizer == nil {
+		return localMutationAuthorizer{}.AuthorizeCommit(a.DeviceID, a.DeviceEpoch, intent)
+	}
+	return a.Authorizer.AuthorizeCommit(a.DeviceID, a.DeviceEpoch, intent)
 }
 
 func (r RequesterContext) hasPermission(need string) bool {
@@ -83,6 +104,7 @@ func requesterAuthorized(r RequesterContext, storedPerm string) bool {
 // slice) does not match. No mutable caller slice is retained.
 type RequesterAuthContext struct {
 	DeviceID        string
+	DeviceEpoch     uint64
 	HostID          string
 	BearerSessionID string
 	BootID          string
@@ -101,13 +123,13 @@ func canonicalRequesterAuth(r RequesterContext) RequesterAuthContext {
 		h.Write([]byte(p))
 	}
 	return RequesterAuthContext{
-		DeviceID: r.DeviceID, HostID: r.HostID, BearerSessionID: r.BearerSessionID,
+		DeviceID: r.DeviceID, DeviceEpoch: r.DeviceEpoch, HostID: r.HostID, BearerSessionID: r.BearerSessionID,
 		BootID: r.BootID, PermDigest: hex.EncodeToString(h.Sum(nil)),
 	}
 }
 
 func (a RequesterAuthContext) equal(o RequesterAuthContext) bool {
-	return a.DeviceID == o.DeviceID && a.HostID == o.HostID &&
+	return a.DeviceID == o.DeviceID && a.DeviceEpoch == o.DeviceEpoch && a.HostID == o.HostID &&
 		a.BearerSessionID == o.BearerSessionID && a.BootID == o.BootID &&
 		a.PermDigest == o.PermDigest
 }
@@ -259,10 +281,6 @@ type ClaimRequest struct {
 	Requester      RequesterContext
 	IdempotencyKey string
 	AssertDigest   string
-	// EpochRecheck is an authority callback supplied by the authenticated
-	// handler. The store invokes it again while holding its mutation lock,
-	// immediately before claiming execution authority.
-	EpochRecheck func() error
 }
 
 // ClaimResult carries the outcome and, for a granted/already_accepted claim, the

@@ -85,7 +85,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	// an epoch reservation before the first approval mutation. The reservation
 	// holds the registry lock so revoke cannot interleave during the entire
 	// claim→delivery→commit window.
-	if err := h.epochGuard(r); err != nil {
+	if err := h.authorizeRequest(r, devicetrust.IntentApprovalClaim); err != nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
 		return
 	}
@@ -98,7 +98,6 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Runtime:        runtime,
 		Requester:      requester,
 		IdempotencyKey: req.IdempotencyKey,
-		EpochRecheck:   func() error { return h.epochGuard(r) },
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
@@ -126,13 +125,15 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		delivery = NewUnavailableApprovalDelivery()
 	}
 	receipt := delivery.Deliver(ApprovalDeliveryRequest{
-		ClaimToken:   claim.Token,
-		Binding:      claim.Binding,
-		Payload:      claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
-		EpochRecheck: func() error { return nil },
+		ClaimToken: claim.Token,
+		Binding:    claim.Binding,
+		Payload:    claim.Payload, // the STORE's canonical payload, never a snapshot rebuild
+		Authorization: MutationAuthorization{
+			Authorizer: h.Authorizer, DeviceID: principal.DeviceID,
+			DeviceEpoch: uint64(principal.DeviceEpoch),
+		},
 	})
-	// Reservation held: epoch cannot change during commit.
-	commit := h.Approvals.RecordDelivery(receipt, func() error { return h.epochGuard(r) })
+	commit := h.Approvals.RecordDelivery(receipt)
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
 		return
@@ -144,6 +145,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 func requesterFromPrincipal(p *devicetrust.Principal) RequesterContext {
 	return RequesterContext{
 		DeviceID:        p.DeviceID,
+		DeviceEpoch:     uint64(p.DeviceEpoch),
 		HostID:          p.HostID,
 		BearerSessionID: p.BearerSessionID,
 		BootID:          p.DeviceBootID,

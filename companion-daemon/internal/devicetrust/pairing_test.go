@@ -726,6 +726,12 @@ type inputResult struct {
 	Outcome      string ` + "`json:\"outcome\"`" + `
 }
 
+type probeMutationAuthorizer struct{}
+
+func (probeMutationAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
+	return nil
+}
+
 func fail(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
@@ -845,9 +851,14 @@ func main() {
 	if err != nil || ticket == "" || ticketExpiry.IsZero() {
 		fail("issue WS ticket: ticket=%q expiry=%v err=%v", ticket, ticketExpiry, err)
 	}
-	handlers := &term.Handlers{
-		Lifecycle: lifecycle, WSTickets: tickets, SessionMgr: sessions, HostIdentity: identity,
+	handlers, err := term.NewHandlers(probeMutationAuthorizer{})
+	if err != nil {
+		fail("construct handlers: %v", err)
 	}
+	handlers.Lifecycle = lifecycle
+	handlers.WSTickets = tickets
+	handlers.SessionMgr = sessions
+	handlers.HostIdentity = identity
 	server := httptest.NewServer(http.HandlerFunc(handlers.HandleWS))
 	defer server.Close()
 

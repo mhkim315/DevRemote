@@ -34,6 +34,10 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
+	if err := h.authorizeRequest(r, devicetrust.IntentSessionStop); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	p := devicetrust.PrincipalFromContext(r.Context())
 	var deviceID string
 	var deviceEpoch uint64
@@ -50,6 +54,10 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 	if h.Lifecycle == nil {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
+		return
+	}
+	if err := h.authorizeRequest(r, devicetrust.IntentSessionKill); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	p := devicetrust.PrincipalFromContext(r.Context())
@@ -69,6 +77,10 @@ func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	if h.Lifecycle == nil {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
+		return
+	}
+	if err := h.authorizeRequest(r, devicetrust.IntentSessionDelete); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	p := devicetrust.PrincipalFromContext(r.Context())

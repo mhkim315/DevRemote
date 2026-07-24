@@ -2,35 +2,47 @@ package term
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"devremote/companion-daemon/internal/devicetrust"
 )
 
+type barrierMutationAuthorizer struct {
+	current  *int64
+	calls    *int
+	revokeOn int
+}
+
+func (a barrierMutationAuthorizer) AuthorizeCommit(_ string, expected uint64, _ devicetrust.MutationIntent) error {
+	(*a.calls)++
+	if a.revokeOn > 0 && *a.calls == a.revokeOn {
+		*a.current = 1
+	}
+	if uint64(*a.current) != expected {
+		return errors.New("stale epoch")
+	}
+	return nil
+}
+
 // TestEpochLock_ApprovalClaimBarrier proves that a successful handler-style
 // preflight does not authorize a claim after revoke: the second check runs
 // inside AuthoritativeApprovalStore.mu and rejects before the state transition.
 func TestEpochLock_ApprovalClaimBarrier(t *testing.T) {
-	store := NewApprovalStore()
 	sid := codexAppServerAdapter + ":epoch-claim"
-	ingestActionable(t, store, sid, "codexas-1-7", "7")
-
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	getAuth := func(string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Active: true, Epoch: uint64(currentEpoch)}
-	}
-	check := func() error {
-		return devicetrust.RecheckEpoch(getAuth, principal)
-	}
-	if err := check(); err != nil { // handler preflight
+	calls := 0
+	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
+	store := NewApprovalStore(authorizer)
+	ingestActionable(t, store, sid, "codexas-1-7", "7")
+	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalClaim); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
 	currentEpoch = 1 // revoke between preflight and the store lock
 	claim := store.ClaimForExecution(ClaimRequest{
 		SessionID: sid, ApprovalID: "codexas-1-7", OptionID: "allow_once",
 		Runtime: boundManagedRT(), Requester: completeRequester(), IdempotencyKey: "k1",
-		EpochRecheck: check,
 	})
 	if claim.Outcome != ClaimStaleEpoch {
 		t.Fatalf("claim outcome = %s, want stale_epoch", claim.Outcome)
@@ -43,27 +55,22 @@ func TestEpochLock_ApprovalClaimBarrier(t *testing.T) {
 // TestEpochLock_ApprovalCommitBarrier proves that RecordDelivery performs its
 // epoch check while holding the store lock and refuses the accepted commit.
 func TestEpochLock_ApprovalCommitBarrier(t *testing.T) {
-	store := NewApprovalStore()
 	sid := codexAppServerAdapter + ":epoch-commit"
-	ingestActionable(t, store, sid, "codexas-1-7", "7")
-	claim := mustClaim(t, store, sid, "codexas-1-7", "allow_once", "k1")
-
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	getAuth := func(string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Active: true, Epoch: uint64(currentEpoch)}
-	}
-	check := func() error {
-		return devicetrust.RecheckEpoch(getAuth, principal)
-	}
-	if err := check(); err != nil { // handler preflight
+	calls := 0
+	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
+	store := NewApprovalStore(authorizer)
+	ingestActionable(t, store, sid, "codexas-1-7", "7")
+	claim := mustClaim(t, store, sid, "codexas-1-7", "allow_once", "k1")
+	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalCommit); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
 	currentEpoch = 1 // revoke between preflight and RecordDelivery lock
 	commit := store.RecordDelivery(DeliveryReceipt{
 		Outcome: DeliveryAccepted, ClaimToken: claim.Token, Binding: claim.Binding,
 		ReceiptID: "receipt-1", DeliveredPayloadDigest: claim.Binding.PayloadDigest,
-	}, check)
+	})
 	if commit.Committed || commit.Outcome != DeliveryStaleRuntime {
 		t.Fatalf("stale commit = %+v, want non-committed stale runtime", commit)
 	}
@@ -88,19 +95,15 @@ func TestEpochLock_ApprovalDeliveryBarrier(t *testing.T) {
 	}
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	getAuth := func(string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Active: true, Epoch: uint64(currentEpoch)}
-	}
-	check := func() error {
-		return devicetrust.RecheckEpoch(getAuth, principal)
-	}
-	if err := check(); err != nil { // handler preflight
+	calls := 0
+	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &calls}
+	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentApprovalDeliver); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
 	currentEpoch = 1
 	receipt := NewGatedApprovalDelivery(gate).Deliver(ApprovalDeliveryRequest{
 		ClaimToken: claim.Token, Binding: claim.Binding, Payload: claim.Payload,
-		EpochRecheck: check,
+		Authorization: MutationAuthorization{Authorizer: authorizer, DeviceID: principal.DeviceID, DeviceEpoch: 0},
 	})
 	if receipt.Outcome != DeliveryUnavailable {
 		t.Fatalf("stale delivery outcome = %s, want unavailable", receipt.Outcome)
@@ -122,21 +125,12 @@ func TestEpochLock_PromptBarrier(t *testing.T) {
 
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	getAuth := func(string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Active: true, Epoch: uint64(currentEpoch)}
-	}
 	checks := 0
-	check := func() error {
-		checks++
-		if checks == 2 { // revoke after the handler preflight, before lock check
-			currentEpoch = 1
-		}
-		return devicetrust.RecheckEpoch(getAuth, principal)
-	}
-	if err := check(); err != nil { // handler preflight
+	authorizer := barrierMutationAuthorizer{current: &currentEpoch, calls: &checks, revokeOn: 2}
+	if err := authorizer.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentPrompt); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)
 	}
-	if err := managed.SubmitPrompt(id, 1, "blocked", check); err == nil {
+	if err := managed.SubmitPrompt(id, 1, "blocked", MutationAuthorization{Authorizer: authorizer, DeviceID: principal.DeviceID, DeviceEpoch: 0}); err == nil {
 		t.Fatal("stale prompt was accepted")
 	}
 	if checks < 2 {
@@ -154,11 +148,8 @@ func TestEpochLock_InputBarrier(t *testing.T) {
 	transport := newTerminalTransport("controlled_pty:epoch-input", 1, &out, nil, nil)
 	currentEpoch := int64(0)
 	principal := &devicetrust.Principal{DeviceID: "epoch-device", DeviceEpoch: 0}
-	getAuth := func(string) devicetrust.AuthorizationState {
-		return devicetrust.AuthorizationState{Active: true, Epoch: uint64(currentEpoch)}
-	}
 	check := func() error {
-		return devicetrust.RecheckEpoch(getAuth, principal)
+		return barrierMutationAuthorizer{current: &currentEpoch, calls: new(int)}.AuthorizeCommit(principal.DeviceID, 0, devicetrust.IntentWSInput)
 	}
 	if err := check(); err != nil { // handler preflight
 		t.Fatalf("preflight: %v", err)

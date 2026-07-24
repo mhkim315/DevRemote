@@ -1,6 +1,7 @@
 package term
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
@@ -49,6 +50,16 @@ type Handlers struct {
 	// EnableManagedClaude). REST reads managed Claude rows/status DIRECTLY from
 	// its owned registry.
 	ManagedClaude *ManagedClaudeService
+}
+
+// NewHandlers constructs the HTTP mutation surface with its mandatory
+// authorizer already bound. All production composition uses this constructor;
+// a nil authorizer is a construction error rather than a fail-open mode.
+func NewHandlers(authorizer devicetrust.MutationAuthorizer) (*Handlers, error) {
+	if authorizer == nil {
+		return nil, fmt.Errorf("mutation authorizer is required")
+	}
+	return &Handlers{Authorizer: authorizer}, nil
 }
 
 // AgentDetector is the agent adapter layer's detection interface.

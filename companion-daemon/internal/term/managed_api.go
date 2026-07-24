@@ -204,7 +204,7 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// SubmitPrompt reserves the active turn and writes to the provider. The
-	// request principal is captured now and re-validated inside the provider lock.
+	// request principal is captured now and authorized inside the provider lock.
 	p := devicetrust.PrincipalFromContext(r.Context())
 	var deviceID string
 	var deviceEpoch uint64
@@ -212,14 +212,12 @@ func (h *Handlers) HandleManagedSessionPrompt(w http.ResponseWriter, r *http.Req
 		deviceID = p.DeviceID
 		deviceEpoch = uint64(p.DeviceEpoch)
 	}
-	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, func() error {
-		if h.Authorizer == nil {
-			return nil
-		}
-		if h.Authorizer == nil {
-			return nil
-		}
-		return h.Authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt)
+	if err := h.authorizeRequest(r, devicetrust.IntentPrompt); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err := h.Managed.SubmitPrompt(r.PathValue("id"), req.Epoch, req.Text, MutationAuthorization{
+		Authorizer: h.Authorizer, DeviceID: deviceID, DeviceEpoch: deviceEpoch,
 	}); err != nil {
 		status := http.StatusConflict
 		if strings.Contains(err.Error(), "not found") {
@@ -238,7 +236,7 @@ type managedLifecycleRequest struct {
 	Epoch int64 `json:"epoch"`
 }
 
-func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
+func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request, intent devicetrust.MutationIntent, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
 	if h.Managed == nil {
 		http.Error(w, "managed sessions not enabled", http.StatusNotFound)
 		return
@@ -257,6 +255,10 @@ func (h *Handlers) handleManagedLifecycle(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	// Stop/kill/delete all mutate provider-owned session state. Recheck after
 	// decoding and immediately before dispatching the selected operation.
+	if err := h.authorizeRequest(r, intent); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	p := devicetrust.PrincipalFromContext(r.Context())
 	var deviceID string
 	var deviceEpoch uint64
@@ -287,7 +289,7 @@ func (h *Handlers) HandleManagedSessionStop(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedLifecycle(w, r, h.Managed.Stop)
+	h.handleManagedLifecycle(w, r, devicetrust.IntentSessionStop, h.Managed.Stop)
 }
 
 // HandleManagedSessionKill — POST /api/managed-sessions/{id}/kill {epoch}.
@@ -296,7 +298,7 @@ func (h *Handlers) HandleManagedSessionKill(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedLifecycle(w, r, h.Managed.Kill)
+	h.handleManagedLifecycle(w, r, devicetrust.IntentSessionKill, h.Managed.Kill)
 }
 
 // HandleManagedSessionDelete — DELETE /api/managed-sessions/{id} {epoch}.
@@ -305,13 +307,13 @@ func (h *Handlers) HandleManagedSessionDelete(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedLifecycle(w, r, h.Managed.Delete)
+	h.handleManagedLifecycle(w, r, devicetrust.IntentSessionDelete, h.Managed.Delete)
 }
 
 // ── C1D Claude managed-session lifecycle handlers ──
 
 // handleManagedClaudeLifecycle delegates lifecycle ops to the Claude service.
-func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.Request, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
+func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.Request, intent devicetrust.MutationIntent, op func(id string, epoch int64, deviceID string, deviceEpoch uint64) error) {
 	if h.ManagedClaude == nil {
 		http.Error(w, "managed claude sessions not enabled", http.StatusNotFound)
 		return
@@ -328,6 +330,10 @@ func (h *Handlers) handleManagedClaudeLifecycle(w http.ResponseWriter, r *http.R
 		return
 	}
 	id := r.PathValue("id")
+	if err := h.authorizeRequest(r, intent); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	p := devicetrust.PrincipalFromContext(r.Context())
 	var deviceID string
 	var deviceEpoch uint64
@@ -357,7 +363,7 @@ func (h *Handlers) HandleManagedClaudeSessionStop(w http.ResponseWriter, r *http
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Stop)
+	h.handleManagedClaudeLifecycle(w, r, devicetrust.IntentSessionStop, h.ManagedClaude.Stop)
 }
 
 // HandleManagedClaudeSessionKill — POST /api/managed-claude-sessions/{id}/kill {epoch}.
@@ -366,7 +372,7 @@ func (h *Handlers) HandleManagedClaudeSessionKill(w http.ResponseWriter, r *http
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Kill)
+	h.handleManagedClaudeLifecycle(w, r, devicetrust.IntentSessionKill, h.ManagedClaude.Kill)
 }
 
 // HandleManagedClaudeSessionDelete — DELETE /api/managed-claude-sessions/{id} {epoch}.
@@ -375,7 +381,7 @@ func (h *Handlers) HandleManagedClaudeSessionDelete(w http.ResponseWriter, r *ht
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	h.handleManagedClaudeLifecycle(w, r, h.ManagedClaude.Delete)
+	h.handleManagedClaudeLifecycle(w, r, devicetrust.IntentSessionDelete, h.ManagedClaude.Delete)
 }
 
 // appendManagedRows appends managed-session rows built directly from the
