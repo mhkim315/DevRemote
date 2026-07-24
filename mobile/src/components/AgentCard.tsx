@@ -36,6 +36,11 @@ export interface SessionTelemetry {
   // S1-D: advisory agent-activity dimension (validated at render), SEPARATE from
   // `state`/`lifecycleState`. Never drives lifecycle or approval actions.
   agentActivity?: AgentActivity;
+  // DS-UI3: server-authoritative surface capabilities. Replace adapter-prefix
+  // routing. Closed vocabularies per BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md §3.3.
+  terminalSurface?: string;       // available | temporarily_unavailable | unsupported
+  transcriptSurface?: string;     // healthy | degraded | temporarily_unavailable | unsupported
+  structuredEvidenceClass?: string; // provider_native_authoritative | provider_side_evidence_partial | none
 }
 
 interface Props {

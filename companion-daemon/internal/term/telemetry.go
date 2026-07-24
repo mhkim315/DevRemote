@@ -48,8 +48,8 @@ type SessionTelemetry struct {
 	// These fields replace adapter-prefix surface selection. The server is the
 	// sole authority; mobile must not infer surface from adapter labels.
 	// Closed vocabularies per BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md §3.3.
-	TerminalSurface        string `json:"terminalSurface,omitempty"`        // available | temporarily_unavailable | unsupported
-	TranscriptSurface      string `json:"transcriptSurface,omitempty"`      // healthy | degraded | temporarily_unavailable | unsupported
+	TerminalSurface         string `json:"terminalSurface,omitempty"`         // available | temporarily_unavailable | unsupported
+	TranscriptSurface       string `json:"transcriptSurface,omitempty"`       // healthy | degraded | temporarily_unavailable | unsupported
 	StructuredEvidenceClass string `json:"structuredEvidenceClass,omitempty"` // provider_native_authoritative | provider_side_evidence_partial | none
 	// Agent events flow through the existing Events field via
 	// PB.2b: Managed ingestion → Transcript → Snapshot.

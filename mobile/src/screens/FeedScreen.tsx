@@ -90,11 +90,42 @@ const NORMAL_MACROS: { label: string; chars: number[]; testID: string }[] = [
 
 
 
-// SP0.5-B + QW5: native managed sessions (codex_app_server and claude_headless
-// adapters — adapter namespace branches, never agentKind inference) have NO
-// PTY/terminal. They get the dedicated bounded managed view instead of the
-// legacy terminal screen.
+// DS-UI3: surface routing is driven by server-authoritative capabilities,
+// not adapter prefixes. The server is the sole authority for terminalSurface
+// and transcriptSurface; the mobile must not infer surfaces from adapter labels.
+//
+// Routing matrix (per DS-CX1 FALLBACK + DS-CL1 DUAL_SUPPORTED):
+//   controlled_pty:*   → Terminal (LegacyFeedScreen), Transcript suppressed after input
+//   codex_app_server:* → Transcript only (ManagedSessionView), headless fallback
+//   claude_headless:*  → Terminal (LegacyFeedScreen primary) + Transcript (secondary, degraded)
+//
+// Dual-surface sessions (claude_headless:*) render LegacyFeedScreen with the
+// terminal tab active and the transcript tab available. The transcript shows
+// a partial/degraded label per structuredEvidenceClass.
 export default function FeedScreen(props: Props) {
+  // Surface capabilities come from the initial session data (if available
+  // before render) or from the first poll response. When unavailable (e.g.,
+  // deep-linked before the session list loads), fall back to prefix-based
+  // routing for backward compatibility.
+  const sessionData = props.initialSessionData;
+  const terminalAvailable = sessionData?.terminalSurface === 'available' || sessionData?.terminalSurface === 'temporarily_unavailable';
+  const transcriptOnly = sessionData?.terminalSurface === 'unsupported' && sessionData?.transcriptSurface !== 'unsupported';
+
+  // DS-CX1 FALLBACK: Codex headless → managed view only, no terminal.
+  if (transcriptOnly) {
+    return <ManagedSessionView session={props.session} token={props.token} onBack={props.onBack} />;
+  }
+
+  // DS-CL1 DUAL_SUPPORTED (Claude) + controlled_pty (shell/terminal):
+  // Terminal is available → LegacyFeedScreen with Terminal+Transcript tabs.
+  if (terminalAvailable) {
+    return <LegacyFeedScreen {...props} />;
+  }
+
+  // Legacy prefix fallback: when session data is not yet available
+  // (deep-link before poll), route managed prefixes to ManagedSessionView.
+  // This preserves backward compatibility and is superseded by the
+  // capability response on the first successful poll.
   if (props.session.startsWith('codex_app_server:') || props.session.startsWith('claude_headless:')) {
     return <ManagedSessionView session={props.session} token={props.token} onBack={props.onBack} />;
   }
@@ -130,6 +161,9 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // E8g5: adapter-level capability. observe-only adapters lack liveTerminal.
   const supportsLiveTerminal = !!(sessionData?.adapterCapabilities?.includes('liveTerminal'));
   const isBestEffortTranscript = !!(sessionData?.adapterCapabilities?.includes('bestEffortTranscript'));
+  // DS-UI3: surface capabilities from server authority.
+  const isPartialEvidence = sessionData?.structuredEvidenceClass === 'provider_side_evidence_partial';
+  const isTranscriptDegraded = sessionData?.transcriptSurface === 'degraded';
   const sessionDataRef = useRef(sessionData);
   sessionDataRef.current = sessionData;
   const [sessionEnded, setSessionEnded] = useState(false);
@@ -1047,6 +1081,22 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
               )}
             </>
           ) : null}
+
+          {/* DS-UI3: Claude dual-surface partial evidence disclosure. */}
+          {isPartialEvidence && (
+            <View style={[styles.transcriptInfo, {backgroundColor: 'rgba(248, 181, 0, 0.08)'}]}>
+              <Text style={[styles.transcriptInfoText, {color: '#f8b500'}]}>
+                Partial transcript — Claude provides side evidence only. Turn identity and full content may be incomplete.
+              </Text>
+            </View>
+          )}
+          {isTranscriptDegraded && !isPartialEvidence && (
+            <View style={[styles.transcriptInfo, {backgroundColor: 'rgba(248, 81, 73, 0.08)'}]}>
+              <Text style={[styles.transcriptInfoText, {color: '#f85149'}]}>
+                Transcript degraded — structured evidence source is unavailable or incomplete.
+              </Text>
+            </View>
+          )}
 
           {newOutputCount > 0 && (
             <TouchableOpacity style={styles.newOutputBanner} onPress={() => {

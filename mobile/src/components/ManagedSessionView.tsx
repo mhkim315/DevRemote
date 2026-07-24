@@ -92,7 +92,11 @@ export default function ManagedSessionView({ session, token, onBack }: Props) {
           {statusCurrent ? status : `${status === 'unavailable' ? 'unavailable' : status} (stale)`}
         </Text>
       </View>
-      <Text style={styles.note}>JSON-RPC native session — bounded output, no terminal.</Text>
+      <Text style={styles.note}>
+        {session.startsWith('claude_headless:')
+          ? 'Claude dual-surface session — terminal is the primary work surface. This view shows partial structured transcript (side evidence only).'
+          : 'Codex managed session — structured transcript. Headless mode; no terminal available.'}
+      </Text>
       <ScrollView
         style={styles.feed}
         ref={scrollRef}
