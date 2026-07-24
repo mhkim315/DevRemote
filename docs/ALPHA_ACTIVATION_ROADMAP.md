@@ -15,14 +15,16 @@ The tracked artifact source predates later production/mobile fixes, Claude was
 routed into a Codex-only managed I/O surface, managed Transcript availability
 is not truthful, and the mobile full-suite gate is order-dependent. The
 authoritative continuation is
-[`BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
+[`BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md`](BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md).
 The earlier build-reproducibility plan remains historical prerequisite
 evidence; it does not override the new matched-candidate requirement.
 
 The product boundary is:
 
-> **Terminal-first interactive control, provider-native managed Transcript
-> where explicitly selected, and manual orchestration optional.**
+> **Provider-native managed sessions with Terminal first where an official TUI
+> and exact same-incarnation side evidence are independently proven,
+> structured Transcript as a secondary surface, explicit fallback modes, and
+> manual orchestration optional.**
 
 The current state is:
 
@@ -36,9 +38,11 @@ feature is composed, enabled, healthy, or product-live.
 The first dogfoodable alpha must provide complete value with coordination,
 validation, workspace leases, and orchestration disabled. It includes only:
 
-- explicit interactive (`controlled_pty`) Codex/Claude operation with Terminal
-  first, plus separately selected provider-native managed Codex and Claude
-  sessions with Transcript first;
+- provider-by-provider conformance for one managed provider incarnation with
+  the official TUI Terminal plus same-incarnation structured side evidence;
+- Terminal first and Transcript secondary for accepted dual-surface sessions,
+  with explicit interactive/headless fallback modes when conformance does not
+  support safe unification;
 - exact provider/runtime/session/generation identity;
 - the existing Transcript service and API authority;
 - minimal Operational Canonical Timeline activation for Activity and N1;
@@ -74,8 +78,8 @@ final architecture.
 | Surface | Alpha responsibility | Authority boundary |
 | --- | --- | --- |
 | **Activity** | Condensed operational events and intervention points | Projection only; never runtime, lifecycle, approval, input, or permission authority |
-| **Transcript** | Detailed chronological conversation and structured execution history; primary surface for explicitly selected native managed sessions | Existing Transcript service/API remains authoritative during migration |
-| **Terminal** | Primary interactive surface for `controlled_pty`; raw PTY detail, diagnosis, recovery, and emergency operation | `TerminalTransport` remains exact-generation transport; `Recorder` remains sole PTY reader |
+| **Transcript** | Detailed chronological conversation and structured execution history; secondary surface for dual-surface sessions and primary surface for explicit headless structured fallback | Existing Transcript service/API remains authoritative during migration |
+| **Terminal** | Default work surface for accepted dual-surface and explicit interactive sessions; raw PTY detail, diagnosis, recovery, and emergency operation | `TerminalTransport` remains exact-generation transport; `Recorder` remains sole PTY reader |
 | **Cockpit** | Optional cross-session/workspace aggregation | Read-only optional projection; not the first entry point or a Base Alpha prerequisite |
 | **N1** | Notification entry into the exact relevant Activity event | Push payload is a locator, never authority |
 
@@ -83,9 +87,11 @@ Activity and Transcript remain distinct views. They converge gradually on
 shared event identity, session/runtime/generation, provenance, ordering/cursor,
 request/result and approval relationships, reconnect continuity, and explicit
 gap/degraded representation. They are not immediately merged into one feed.
-Runtime mode determines the initial view; dogfood may refine presentation
+Server-issued, generation-bound capabilities determine the available surfaces;
+adapter prefixes and managed labels do not. Dogfood may refine presentation
 within each mode but may not silently swap runtime authority. Terminal remains
-permanently accessible for interactive sessions and as the diagnostic fallback
+permanently accessible for interactive and accepted dual-surface sessions and
+as the diagnostic fallback
 where a real PTY exists.
 
 The safest initial hierarchy is runtime-mode specific: a `controlled_pty`
@@ -283,22 +289,18 @@ accepted trust boundaries.
 
 ### Step 9.5 — Base Alpha candidate
 
-Complete and independently accept
-[`Base Alpha Terminal-First and Managed Transcript Remediation`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
+Complete and independently accept the
+[`Base Alpha Dual-Surface Managed Session Execution Plan`](BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md).
 The prior security-lifecycle result remains evidence for its exact artifact,
 not acceptance of later production/mobile fixes.
 
-The bounded order is R0 evidence reconciliation, R1 runtime/provider contract,
-R2 Terminal-first interactive path, R3 truthful Transcript availability, R4
-Codex managed Transcript, R5 Claude managed Transcript, R6 provider-specific
-input/lifecycle closeout, R7 input UX and deterministic tests, and R8 a new
-matched candidate/device gate. No implementation wave may skip its independent
-contract and evidence gates.
-
-After R0–R7 ACCEPT, freeze one new exact production candidate, build matched
-daemon/APK artifacts, run automated safety gates, execute the bounded SM-S926N
-matrix, publish exact known issues and release notes, obtain independent
-acceptance, and only then begin dogfood.
+R0–R4 remain in ancestry. The old R5 is cancelled. The bounded continuation is
+DS-CX1 Codex stock-binary conformance, DS-CL1 Claude exact-session conformance,
+conditional provider hosts, capability-driven mobile routing, frozen input and
+approval arbitration, deterministic stabilization, one matched daemon/APK
+candidate, a new SM-S926N matrix, and a final independent milestone audit.
+Codex and Claude advance independently; a provider conformance REJECT selects
+its explicit fallback modes and blocks only that provider implementation.
 
 ### Later Manual Alpha — optional coordination and validation
 

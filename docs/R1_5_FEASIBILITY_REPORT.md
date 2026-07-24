@@ -1,6 +1,12 @@
 # R1.5 — Provider Dual-Channel Feasibility Research
 
-**Status:** READ-ONLY RESEARCH — NO IMPLEMENTATION
+> **Superseded for execution and provider classification.** This research
+> remains historical input, but its Codex category A conclusion, proxy-as-TUI
+> assumption and execution instructions are not authoritative. The corrected
+> classifications and gates are in
+> [`BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md`](BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md).
+
+**Status:** HISTORICAL RESEARCH — SUPERSEDED FOR EXECUTION
 **Parent:** `BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md` §6 (inserted between 9.5-TM-R1 and 9.5-TM-R2)
 **Blocks:** 9.5-TM-R2, R4, R5 (provider-specific implementation must not begin before ACCEPT)
 **Date:** 2026-07-25

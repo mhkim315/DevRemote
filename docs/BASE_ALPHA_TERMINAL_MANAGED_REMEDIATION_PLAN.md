@@ -1,6 +1,12 @@
 # Base Alpha Terminal-First and Managed Transcript Remediation Plan
 
-**Status:** AUTHORITATIVE REMEDIATION PLAN — 9.5-TM-R0 COMPLETED, 9.5-TM-R1 COMPLETED
+> **Superseded for future execution.** Historical R0–R4 rationale and evidence
+> remain intact, but no new packet may be dispatched from this document.
+> Continue only through
+> [`BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md`](BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md).
+> In particular, the old `9.5-TM-R5` is cancelled.
+
+**Status:** HISTORICAL — FUTURE EXECUTION SUPERSEDED
 
 **Planning baseline:** `b476d8af700bd29a9b47422f0954088d8bbaed59`
 

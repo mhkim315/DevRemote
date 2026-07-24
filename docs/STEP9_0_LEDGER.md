@@ -2,7 +2,7 @@
 
 **Status:** HISTORICAL FOUNDATION LEDGER — Steps 9.0–9.4 accepted; Step 9.5
 dogfood acceptance blocked by
-[`BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
+[`BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md`](BASE_ALPHA_DUAL_SURFACE_EXECUTION_PLAN.md).
 
 **Candidate resolver:** `git log -1 --format=%H -- docs/STEP9_0_LEDGER.md`
 **Date:** 2026-07-23
