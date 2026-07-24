@@ -1,6 +1,6 @@
 # Base Alpha Terminal-First and Managed Transcript Remediation Plan
 
-**Status:** AUTHORITATIVE REMEDIATION PLAN — IMPLEMENTATION NOT STARTED
+**Status:** AUTHORITATIVE REMEDIATION PLAN — 9.5-TM-R0 COMPLETED, 9.5-TM-R1 COMPLETED
 
 **Planning baseline:** `b476d8af700bd29a9b47422f0954088d8bbaed59`
 
@@ -8,6 +8,10 @@
 recorded pairing, trust, restart, revoke, and recovery evidence remains useful
 for the exact artifacts that produced it, but a new matched candidate and the
 remediation gates below are required before Base Alpha acceptance.
+
+**Completed:**
+- `9.5-TM-R0` (`8aaa0213e`) — Evidence & authority reconciliation
+- `9.5-TM-R1` (`c6e569f51`) — Runtime mode & provider contract freeze
 
 **Authority:** This document narrows Step 9.5. It does not reopen PB, Steps
 9.1–9.4, device trust, approval authority, exact-generation input,
@@ -46,7 +50,7 @@ terminal-hosted Transcript client, not a PTY attached to the provider process.
 No existing unqualified CLI command may silently change runtime mode. The
 implementation packet must introduce and test an explicit mode selection
 (`terminal` versus `managed`) and define a compatibility transition before any
-default changes. Mobile session creation should make the two modes visible and
+default changes. Mobile session creation must make the two modes visible and
 must not route a managed ID to a Terminal or a PTY ID to a managed Transcript
 controller.
 
@@ -112,12 +116,38 @@ failing iOS pairing suites passed 23/23 when run together in isolation. Base
 Alpha cannot treat a suite whose result depends on mock/order state as a stable
 gate.
 
+### 2.6 Codex HTTP/IPC creation mode divergence (found R1)
+
+HTTP `POST /api/sessions` with `profileId=codex` creates `controlled_pty:*`
+wrapping the `codex` binary (PTY mode). IPC `{"operation":"create","profileId":"codex"}`
+creates `codex_app_server:*` via `ManagedCodexService` (managed mode). The
+same profile ID produces fundamentally different adapter types depending on
+the caller. Mobile cannot create managed Codex sessions at all. Resolved in
+9.5-TM-R1 contract §5.2.
+
 ## 3. Provider contract boundary
 
 POKIT must not force Codex and Claude into a common I/O contract when their
 native protocols do not share semantics.
 
-### 3.1 Shared minimum contract
+### 3.1 Provider ownership matrix
+
+Every semantic domain has exactly one owner. The common layer dispatches to
+that owner by canonical adapter prefix; it never infers ownership from labels,
+agent kind, or provider string matching.
+
+| Domain | Codex Owner | Claude Owner | Shared/Common |
+|--------|-------------|--------------|---------------|
+| **Event decoding** | `ManagedCodexService` — JSON-RPC notification parsing, `item/started`, `item/completed`, `turn/*` | `ManagedClaudeService` — stream-json frame decoding, version pinning, content-block assembly | Common Transcript segment kind mapping (after provider normalizer emits) |
+| **Prompt submission** | `ManagedCodexService.SubmitPrompt` — one-active-turn enforcement, `turn/start` JSON-RPC via stdin | **NOT IMPLEMENTED** — observation-only until 9.5-TM-R6 proves safe write contract | **None** — no generic SubmitPrompt |
+| **Resume** | Codex-owned: app-server session resume, turn continuation | Claude-owned: `ResumeForApproval`, `claudeResumeCoordinator`, `tool_deferred` behavior | **None** — resume is provider-specific |
+| **Approval** | Codex-owned: JSON-RPC `permission/request` notifications, approval delivery via `AuthoritativeApprovalStore` | Claude-owned: `tool_deferred` detection, approval join/denial witnesses, `claudeDispatchingApprovalDelivery` | Common `SafeApprovalDTO`, `SafeOption` redacted projection; `AuthoritativeApprovalStore` is shared infrastructure |
+| **Completion** | Codex-owned: `turn/completed`, `item/completed` JSON-RPC, exit code classification | Claude-owned: stream-json `message_stop`, `tool_deferred` graceful exit, `SimulateGracefulExit` | Common `LifecycleExited` / `LifecycleKilled` / `LifecycleFailed` states |
+| **Lifecycle (Stop/Kill/Delete)** | `ManagedCodexService` via `LifecycleService` dispatcher | `ManagedClaudeService` via `LifecycleService` dispatcher | `LifecycleService.ownerFor` — dispatches by adapter prefix; `ProviderLifecycleOwner` interface is shared |
+| **Transcript projection** | Codex-specific normalizer (9.5-TM-R4) | Claude-specific normalizer (9.5-TM-R5) | `transcript.Service` — adapter-agnostic read/write; bounded segment schema |
+| **Terminal** | **None** — managed Codex has no PTY | **None** — managed Claude has no PTY | `controlled_pty:*` only — `HandleWS` + `TerminalTransport` |
+
+### 3.2 Shared minimum contract
 
 Only the following may be common:
 
@@ -134,7 +164,7 @@ The common layer must dispatch to a provider owner. It must not call a Codex
 concrete service for a Claude ID, infer provider from UI labels, or claim a
 capability that the selected provider owner does not implement.
 
-### 3.2 Codex-owned semantics
+### 3.3 Codex-owned semantics
 
 Codex retains ownership of:
 
@@ -144,7 +174,7 @@ Codex retains ownership of:
 - Codex-native event decoding and completion/error outcomes; and
 - Codex resume/cancel behavior.
 
-### 3.3 Claude-owned semantics
+### 3.4 Claude-owned semantics
 
 Claude retains ownership of:
 
@@ -159,7 +189,7 @@ write contract proves how a prompt reaches the exact current Claude
 incarnation. If the current process is observation-only or one-shot, the UI
 must say so and remain read-only.
 
-### 3.4 Shared Transcript projection
+### 3.5 Shared Transcript projection
 
 Provider-specific normalizers may emit only accepted, bounded, redacted
 Transcript inputs. The existing Transcript service/API remains the Alpha
@@ -177,7 +207,80 @@ The projection must not include:
 Timeline remains operational evidence, not the full conversation store and not
 input, approval, lifecycle, or delivery authority.
 
-## 4. Execution sequence
+## 4. Security Regression Checklist
+
+Every implementation wave must pass these checks before claiming ACCEPT.
+These apply to ALL waves; a single failure blocks the wave.
+
+### 4.1 Mutation Authorization
+
+| Check | What to Verify | Applies To |
+|-------|---------------|------------|
+| **MutationAuthorizer wired** | Every lifecycle, prompt, and create handler receives a non-nil `MutationAuthorizer`. Nil authorizer is a construction error (`create.go`, `lifecycle_service.go:80`, `ipc.go:39`). | All waves |
+| **AuthorizeAndCommit called** | Every mutation (Stop, Kill, Delete, SubmitPrompt, approve/reject) goes through `authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, intent, fn)`. The decisive comparison happens inside the lock. | 9.5-TM-R4, R5, R6 |
+| **Intent matches operation** | `IntentSessionStop` for Stop, `IntentSessionKill` for Kill, `IntentSessionDelete` for Delete, `IntentPrompt` for prompt. No intent reuse or `""` intent. | 9.5-TM-R6 |
+| **Device identity captured before lock** | `deviceID` and `deviceEpoch` are derived from `PrincipalFromContext` or `ipcMutationIdentity` BEFORE entering the authorization lock. They are never read from the request body. | All waves |
+| **Principal nil handling** | When `PrincipalFromContext` returns nil (insecure-local-only mode), `deviceID` and `deviceEpoch` are zero-valued. The authorizer's behavior for zero identity is explicit and documented. | All waves |
+
+### 4.2 Epoch and Generation Binding
+
+| Check | What to Verify | Applies To |
+|-------|---------------|------------|
+| **Epoch from catalog, not request** | The decisive epoch comparison uses the server-derived epoch from `ManagedRuntimeCatalog.Get(id).Epoch` or `OwnedPTYRuntime.Get(id).State`, NEVER the request body epoch alone. | 9.5-TM-R4, R5, R6 |
+| **Stale epoch → 409** | A mismatched epoch between the request and the server-derived record returns `ErrLifecycleStaleGeneration` (409). The replacement process is unaffected. | 9.5-TM-R6 |
+| **Epoch in event store** | Every event appended to a managed event store carries `epoch` in its identity tuple `(sessionID, epoch, seq)`. Events from a replaced generation are rejected. | 9.5-TM-R4, R5 |
+| **Catalog read under lock** | The catalog read (deriveEpoch) and the owner's decisive comparison occur under the same lifecycle lock — no TOCTOU gap between derivation and decision. | 9.5-TM-R6 |
+
+### 4.3 Provider Isolation
+
+| Check | What to Verify | Applies To |
+|-------|---------------|------------|
+| **No cross-provider dispatch** | `HandleManagedSessionPrompt` does not call `ManagedClaudeService`. `HandleManagedSessionEvents` does not call `ManagedCodexService.Registry()` for a Claude session ID. | 9.5-TM-R4, R5, R6 |
+| **Adapter prefix dispatch** | Every handler that branches on provider uses `sessionid.ParseSessionID(id).Adapter` for the switch, never `strings.Contains`, `HasPrefix`, or `agentKind` inference. | All waves |
+| **Separate registries** | `ManagedCodexService.Registry()` and `ManagedClaudeService.Registry()` are separate instances. Cross-registry lookup (e.g., looking up a `claude_headless:*` ID in the Codex registry) must return `(ManagedSessionRecord{}, false)`. | All waves |
+| **ManagedSessionView routing** | `FeedScreen.tsx:97` routes by `session.startsWith('codex_app_server:') \|\| session.startsWith('claude_headless:')`. No `agentKind` or label-based routing. | 9.5-TM-R3 |
+
+### 4.4 Input/Output Boundaries
+
+| Check | What to Verify | Applies To |
+|-------|---------------|------------|
+| **No PTY for managed sessions** | `HandleWS` at `pty.go:269` returns error for `codex_app_server:*` and `claude_headless:*`. No managed session can open a WebSocket terminal. | All waves |
+| **No raw bytes in managed Transcript** | Managed Transcript segments carry only validated, bounded `kind`/`source`/`text` fields. Raw PTY bytes never enter managed Transcript. | 9.5-TM-R4, R5 |
+| **Secrets never in Transcript** | Bearer tokens, private keys, environment values, and unredacted provider payloads are rejected by the normalizer before reaching the Transcript segment store. | 9.5-TM-R4, R5 |
+| **Input ACK preserves delivery_unknown** | Lost ACKs surface `delivery_unknown`, not silent success. Partial delivery preserves the original text. | 9.5-TM-R2, R7 |
+
+### 4.5 Cleanup and Idempotency
+
+| Check | What to Verify | Applies To |
+|-------|---------------|------------|
+| **Delete clears all projections** | `LifecycleService.Delete` clears `transcript.ClearTranscript(id)` AND `status.Clear(id)`. Provider-level Delete clears registry + coordinator + approvals. | 9.5-TM-R6 |
+| **Running delete rejected** | `LifecycleService.Delete` returns `ErrLifecycleNotTerminal` (409) for non-exited sessions. Zero mutation. | 9.5-TM-R6 |
+| **Idempotent terminal outcomes** | Repeated Stop on an exited session returns the current terminal state without error. Repeated Kill same. Repeated Delete after deletion returns 404. | 9.5-TM-R6 |
+| **No orphaned runtimes** | Every Create path that fails after launch cleans up the runtime. No background goroutine outlives its session without an exit watcher. | All waves |
+
+## 5. Model Allocation Strategy
+
+Different waves require different reasoning depth. The following table assigns
+a model tier per wave type to keep implementation velocity high while
+reserving deep reasoning for security-critical phases.
+
+| Wave Type | Model Tier | Rationale |
+|-----------|-----------|-----------|
+| **Contract design** (R1-style) | Opus / max effort | Architectural decisions with irreversible downstream effects. Requires exhaustive caller inventory and adversarial edge-case search. |
+| **Implementation — UX/surface** (R2, R3, R7) | Sonnet / high effort | UI restructuring, capability gating, input unification. Testable via deterministic gate; iteration is cheap. |
+| **Implementation — provider normalizer** (R4, R5) | Opus / max effort | Stream parsing, event store semantics, redaction, secret rejection. Provider-specific protocols have many edge cases; a single missed frame boundary corrupts the Transcript. |
+| **Implementation — lifecycle/auth** (R6) | Opus / max effort | Mutation authorization, epoch binding, Stop/Kill/Delete closeout. Every path must fail closed. Security regression checklist (§4) is gating. |
+| **Review/V1 verification** (all waves) | Opus / medium effort | Adversarial review: try to make it fail. Independent perspective from implementation model. |
+| **V2 closeout** (all waves) | Sonnet / high effort | Evidence collection, gate runs, documentation. Deterministic; no novel reasoning required. |
+| **Physical gate** (R8B) | Human + scripted | SM-S926N matrix is scripted physical steps. Model assists with log analysis only. |
+| **Test fixes** (R7 Jest) | Sonnet / medium effort | Mock isolation, module reset. Mechanical; well-understood failure modes. |
+
+**Rule:** No wave that touches `ManagedCodexService`, `ManagedClaudeService`,
+`LifecycleService`, `MutationAuthorizer`, `AuthorizeAndCommit`, or the managed
+event store may be implemented below Opus effort. The security regression
+checklist (§4) gates every such wave.
+
+## 6. Execution sequence
 
 Every implementation wave requires a frozen contract, implementation
 pre-gate, fresh V1 review, deterministic evidence, and fresh V2 closeout where
@@ -185,7 +288,9 @@ it changes milestone authority. Implementation and evidence commits remain
 separate. No wave may embed its own final commit SHA in content that determines
 that SHA.
 
-### R0 — Evidence and authority reconciliation
+### 9.5-TM-R0 — Evidence and authority reconciliation
+
+**Status:** COMPLETED (`8aaa0213e`)
 
 **Purpose**
 
@@ -204,7 +309,11 @@ that SHA.
 - Claude lifecycle is not described as absent.
 - Historical evidence remains immutable and correctly scoped.
 
-### R1 — Runtime mode and provider-bound contract freeze
+**Deliverable:** `docs/BASE_ALPHA_FINAL_REPORT.md` (reconciled)
+
+### 9.5-TM-R1 — Runtime mode and provider-bound contract freeze
+
+**Status:** COMPLETED (`c6e569f51`)
 
 **Purpose**
 
@@ -229,7 +338,9 @@ that SHA.
 - Adapter choice based on labels or inferred agent kind.
 - Any managed-to-PTY or PTY-to-managed hidden fallback.
 
-### R2 — Terminal-first interactive product path
+**Deliverable:** `docs/R1_CONTRACT.md`
+
+### 9.5-TM-R2 — Terminal-first interactive product path
 
 **Purpose**
 
@@ -255,7 +366,7 @@ that SHA.
 Any change to PTY bytes, terminal rendering, lifecycle authority, or geometry
 made solely to improve Transcript output.
 
-### R3 — Transcript availability and truthful mobile UX
+### 9.5-TM-R3 — Transcript availability and truthful mobile UX
 
 **Purpose**
 
@@ -278,7 +389,7 @@ made solely to improve Transcript output.
 No state may invent an event or present unavailable managed output as a healthy
 empty conversation.
 
-### R4 — Codex managed Transcript projection
+### 9.5-TM-R4 — Codex managed Transcript projection
 
 **Purpose**
 
@@ -288,6 +399,15 @@ empty conversation.
 - Project bounded Codex assistant, tool, lifecycle, and result facts into the
   existing Transcript contract.
 - Add local `watch`/`--follow` consumption of the same cursor.
+
+**Provider ownership (Codex):**
+- **Event decoding:** `ManagedCodexService` pump loop parses JSON-RPC
+  notifications. No common-layer JSON-RPC parsing.
+- **Prompt:** `ManagedCodexService.SubmitPrompt` enforces one-active-turn.
+  No common SubmitPrompt.
+- **Resume:** Codex-owned app-server session resume.
+- **Completion:** `turn/completed`, `item/completed` → `LifecycleExited`.
+  Provider-owned exit classification.
 
 **Tests**
 
@@ -299,7 +419,7 @@ empty conversation.
 - mobile and local viewer equivalence;
 - no Transcript failure blocks Codex runtime or prompt authority.
 
-### R5 — Claude managed Transcript projection
+### 9.5-TM-R5 — Claude managed Transcript projection
 
 **Purpose**
 
@@ -307,7 +427,19 @@ empty conversation.
 - Preserve Claude one-shot/resume/hook/approval semantics.
 - Project only reviewed Claude content and outcomes into the common Transcript
   segment boundary.
-- Keep prompt UI disabled unless R6 proves a safe write capability.
+- Keep prompt UI disabled unless 9.5-TM-R6 proves a safe write capability.
+
+**Provider ownership (Claude):**
+- **Event decoding:** `ManagedClaudeService` stream-json normalizer.
+  Version-pinned, fail-closed on unknown frame types. No common-layer
+  stream-json parsing.
+- **Prompt:** NOT IMPLEMENTED. Claude is observation-only at this wave.
+- **Resume:** `claudeResumeCoordinator`, `ResumeForApproval`, `tool_deferred`.
+  Provider-owned.
+- **Approval:** `tool_deferred` detection, approval join/denial witnesses.
+  Provider-owned delivery witnesses.
+- **Completion:** `message_stop`, `tool_deferred` graceful exit →
+  `SimulateGracefulExit`. Provider-owned.
 
 **Tests**
 
@@ -320,13 +452,24 @@ empty conversation.
 - secret/redaction and bounded-content tests;
 - proof that deleted JSONL discovery/external observer readers were not revived.
 
-### R6 — Provider-specific managed input and lifecycle closeout
+### 9.5-TM-R6 — Provider-specific managed input and lifecycle closeout
 
 **Purpose**
 
 - Retain the current Codex prompt contract.
 - Decide and implement only a provider-supported Claude write contract.
 - Verify shared lifecycle dispatch against both owners.
+
+**Provider ownership:**
+- **Prompt:** Codex retains `ManagedCodexService.SubmitPrompt`. Claude:
+  observation-only is acceptable if safe input cannot be proven; otherwise
+  Claude-specific write contract (not a generic SubmitPrompt).
+- **Lifecycle:** `LifecycleService.ownerFor` dispatches by adapter prefix.
+  `ProviderLifecycleOwner` interface is shared; implementations are separate.
+  Stop/Kill/Delete remain exact-generation, authorized, and provider-owned.
+- **Completion:** Delete requires terminal state and clears only the exact
+  session's projections (Transcript + status + registry + approvals +
+  coordinator).
 
 **Rules**
 
@@ -347,7 +490,7 @@ empty conversation.
 - registry, approval, coordinator, Transcript and status cleanup;
 - physical Claude create → stop → delete → list disappearance.
 
-### R7 — Input UX and deterministic test gate
+### 9.5-TM-R7 — Input UX and deterministic test gate
 
 **Purpose**
 
@@ -365,14 +508,36 @@ empty conversation.
 - randomized and repeated full Jest suite order;
 - iOS and Android pairing-store tests do not leak mock state.
 
-### R8 — Matched candidate and bounded physical gate
+### 9.5-TM-R8A — Matched candidate freeze and artifact build
 
 **Purpose**
 
-- Freeze one new production candidate after R0–R7 ACCEPT.
+- Freeze one new production candidate after 9.5-TM-R0 through 9.5-TM-R7 ACCEPT.
 - Build daemon and APK from that exact source.
-- Prove embedded and installed identities.
-- Run automated and SM-S926N gates before restoring `DOGFOOD READY`.
+- Prove embedded identities (`vcs.revision`, `vcs.modified=false`).
+- Record daemon and APK SHA256 hashes in the artifact manifest.
+- Publish `HANDOFF.env` with expected hashes, device target, and test profile.
+
+**ACCEPT**
+
+- One exact production source SHA for daemon, APK, and evidence chain.
+- `vcs.modified=false` for both daemon and APK builds.
+- Daemon `vcs.revision` matches the frozen source SHA.
+- Artifact manifest (`pokit-alpha-device-artifacts/MANIFEST.json`) is
+  committed and pushed.
+- No source changes between freeze and build.
+- Documentation HEAD and evidence HEAD remain distinct identities.
+
+**Deliverable:** `pokit-alpha-device-artifacts/` manifest updated with new
+candidate identity.
+
+### 9.5-TM-R8B — Physical SM-S926N gate
+
+**Purpose**
+
+- Run the full physical-device matrix against the 9.5-TM-R8A frozen candidate.
+- Every test steps through the security regression checklist (§4).
+- Restore `DOGFOOD READY` only after every matrix row passes.
 
 **Required physical matrix**
 
@@ -386,18 +551,21 @@ empty conversation.
 - N1 exact-event navigation;
 - approval/deny/input/interrupt/stop/kill/delete;
 - revoke blocks all old mutation authority;
-- installed daemon/APK hashes match the frozen manifest.
+- installed daemon/APK hashes match the 9.5-TM-R8A frozen manifest.
 
 **ACCEPT**
 
-- one exact production source, daemon, APK, installation, and evidence chain;
+- one exact production source, daemon, APK, installation, and evidence chain
+  (verified against 9.5-TM-R8A manifest);
 - deterministic daemon and mobile gates;
 - zero wrong-session/wrong-generation action;
 - no Transcript or Timeline failure blocks native runtime;
 - no raw PTY, secret, or hidden reasoning enters managed Transcript;
 - independent V1/V2 acceptance and corrected release notes.
 
-## 5. Explicitly deferred
+**DOGFOOD READY restored only after 9.5-TM-R8B ACCEPT.**
+
+## 7. Explicitly deferred
 
 - parsing PTY output to reconstruct provider semantics;
 - attaching a PTY to the existing headless app-server/stream-json process
@@ -409,17 +577,19 @@ empty conversation.
 - Terminal/Transcript visual merging into one feed;
 - removal of existing Transcript or Terminal fallback authority.
 
-## 6. Executor handoff for R0 only
+## 8. Executor handoff
 
-The next executor may modify documentation only.
+9.5-TM-R0 and 9.5-TM-R1 are complete. The next executor begins at 9.5-TM-R2.
 
-1. Verify branch, HEAD/upstream, clean worktree, and artifact manifest contents.
-2. Reconcile `BASE_ALPHA_FINAL_REPORT.md`, the Step 9.5 status, and the bug
-   ledger against repository callers.
-3. Do not change historical test artifacts or claim a new candidate.
-4. Run documentation checks, `git diff --check`, changed-document secret scan,
-   ancestry, upstream, and clean-worktree checks.
-5. Submit R0 for independent acceptance.
-
-R1 or production implementation must not begin until R0 receives independent
-ACCEPT.
+1. Verify branch `feature/canonical-timeline-foundation`, HEAD, upstream, and
+   clean worktree.
+2. Read `docs/R1_CONTRACT.md` — the frozen R1 contract is authoritative for
+   all subsequent implementation.
+3. Read `docs/BASE_ALPHA_FINAL_REPORT.md` — the R0-reconciled bug
+   classification and evidence record.
+4. Every implementation wave must pass the Security Regression Checklist (§4)
+   before claiming ACCEPT.
+5. Every wave that touches mutation or provider-owned semantics must be
+   implemented at Opus effort per the Model Allocation Strategy (§5).
+6. Implementation and evidence commits remain separate.
+7. No implementation begins before its contract receives independent ACCEPT.
