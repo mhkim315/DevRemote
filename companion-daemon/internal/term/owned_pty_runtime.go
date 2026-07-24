@@ -80,8 +80,10 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	}
 	var reservedGen int64
 	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
+		o.mu.Lock()
 		o.nextGen++
 		reservedGen = o.nextGen
+		o.mu.Unlock()
 		return nil
 	}); err != nil {
 		return "", err

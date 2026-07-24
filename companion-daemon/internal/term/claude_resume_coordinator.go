@@ -588,10 +588,6 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 	if entry.resumeNonce != resumeNonce {
 		return WriteHandle{}, outcomeMismatch
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalDeliver, func() error { return nil }) {
-		return WriteHandle{}, outcomeStale
-	}
-
 	switch entry.state {
 	case stateDecisionReserved:
 		// R4: BindResumeProcess MUST have been called before ClaimWrite.
@@ -620,7 +616,7 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 		}
 
 		// R4: one-time bind — create the ResumeAttemptIdentity.
-		entry.attempt = &ResumeAttemptIdentity{
+		attempt := &ResumeAttemptIdentity{
 			sessionID:       sessionID,
 			toolUseID:       toolUseID,
 			toolName:        toolName,
@@ -628,12 +624,15 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 			resumeLaunchGen: resumeLaunchGen,
 			registeredAt:    clockNow(),
 		}
-		// OriginalApprovalIdentity fields (entry.sessionID, entry.toolUseID)
-		// remain immutable. MarkWitnessed and MarkDenialWitness validate
-		// against entry.attempt (the bound ResumeAttemptIdentity).
-
-		entry.state = stateWriteClaimed
-		entry.writeClaimedAt = clockNow()
+		// Atomic: authorize + commit state change.
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalDeliver, func() error {
+			entry.attempt = attempt
+			entry.state = stateWriteClaimed
+			entry.writeClaimedAt = clockNow()
+			return nil
+		}) {
+			return WriteHandle{}, outcomeStale
+		}
 		return WriteHandle{claimToken: claimToken, decision: entry.decision}, outcomeWritten
 
 	case stateWriteClaimed, stateWitnessPending, stateDecisionWritten:
@@ -677,9 +676,6 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	if !ok {
 		return outcomeAmbiguous
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
-		return outcomeAmbiguous
-	}
 	if entry.state != stateWriteClaimed && entry.state != stateWitnessPending {
 		return outcomeAmbiguous
 	}
@@ -703,8 +699,13 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	// writeOK == true
 	switch entry.state {
 	case stateWriteClaimed:
-		entry.state = stateDecisionWritten
-		entry.decisionWrittenAt = clockNow()
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.state = stateDecisionWritten
+			entry.decisionWrittenAt = clockNow()
+			return nil
+		}) {
+			return outcomeAmbiguous
+		}
 		return outcomeWritten
 	case stateWitnessPending:
 		// R4: commit the stored early witness.
@@ -714,11 +715,16 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 			delete(c.entries, claimToken)
 			return outcomeAmbiguous
 		}
-		entry.state = stateTerminal
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		delete(c.entries, claimToken)
-		delete(c.identities, entry.approvalID)
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+			delete(c.entries, claimToken)
+			delete(c.identities, entry.approvalID)
+			return nil
+		}) {
+			return outcomeAmbiguous
+		}
 		return outcomeWritten
 	default:
 		return outcomeAmbiguous
@@ -736,27 +742,36 @@ func (c *claudeResumeCoordinator) CancelEntry(claimToken string) {
 	if !ok {
 		return
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error { return nil }) {
-		return
-	}
 	switch entry.state {
 	case stateDecisionReserved:
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalCancelled}
-		delete(c.entries, claimToken)
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
+			delete(c.entries, claimToken)
+			return nil
+		})
 	case stateWriteClaimed:
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
-		delete(c.entries, claimToken)
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+			delete(c.entries, claimToken)
+			return nil
+		})
 	case stateWitnessPending:
-		entry.earlyWitness = nil
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalCancelled}
-		delete(c.entries, claimToken)
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error {
+			entry.earlyWitness = nil
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
+			delete(c.entries, claimToken)
+			return nil
+		})
 	case stateDecisionWritten:
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalCancelled}
-		delete(c.entries, claimToken)
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCancel, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalCancelled}
+			delete(c.entries, claimToken)
+			return nil
+		})
 	default:
 	}
 }
@@ -918,9 +933,6 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 	if !ok {
 		return fail(WitnessStale)
 	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
-		return fail(WitnessStale)
-	}
 	if entry.attempt == nil {
 		return fail(WitnessStale)
 	}
@@ -953,12 +965,19 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.earlyWitness = &earlyWitnessArgs{
-			kind: kind, sessionID: sessionID, toolUseID: toolUseID,
-			toolName: toolName, inputDigest: inputDigest,
-			runtime: rt, exactRespDigest: respDigest,
+		var result WitnessResult
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.earlyWitness = &earlyWitnessArgs{
+				kind: kind, sessionID: sessionID, toolUseID: toolUseID,
+				toolName: toolName, inputDigest: inputDigest,
+				runtime: rt, exactRespDigest: respDigest,
+			}
+			entry.state = stateWitnessPending
+			return nil
+		}) {
+			return fail(WitnessStale)
 		}
-		entry.state = stateWitnessPending
+		_ = result
 		return WitnessResult{Outcome: WitnessPending}
 
 	case stateWitnessPending:
@@ -980,10 +999,15 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		delete(c.entries, claimToken)
-		delete(c.identities, entry.approvalID)
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+			delete(c.entries, claimToken)
+			delete(c.identities, entry.approvalID)
+			return nil
+		}) {
+			return fail(WitnessStale)
+		}
 		return WitnessResult{Outcome: Witnessed, Binding: entry.binding, Digest: respDigest}
 
 	default:
@@ -1000,9 +1024,6 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 
 	entry, ok := c.entries[claimToken]
 	if !ok || entry.attempt == nil {
-		return fail(WitnessStale)
-	}
-	if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error { return nil }) {
 		return fail(WitnessStale)
 	}
 	if entry.decision != "deny" {
@@ -1042,13 +1063,18 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.earlyWitness = &earlyWitnessArgs{
-			kind:      WitnessPermissionDenials,
-			sessionID: denialSessionID, toolUseID: match.ToolUseID,
-			toolName: match.ToolName, inputDigest: match.InputDigest,
-			runtime: rt, exactRespDigest: respDigest,
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.earlyWitness = &earlyWitnessArgs{
+				kind:      WitnessPermissionDenials,
+				sessionID: denialSessionID, toolUseID: match.ToolUseID,
+				toolName: match.ToolName, inputDigest: match.InputDigest,
+				runtime: rt, exactRespDigest: respDigest,
+			}
+			entry.state = stateWitnessPending
+			return nil
+		}) {
+			return fail(WitnessStale)
 		}
-		entry.state = stateWitnessPending
 		return WitnessResult{Outcome: WitnessPending}
 
 	case stateWitnessPending:
@@ -1071,10 +1097,15 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
-		delete(c.entries, claimToken)
-		delete(c.identities, entry.approvalID)
+		if !c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalWitnessed, Binding: entry.binding, ExactResponseDigest: respDigest}
+			delete(c.entries, claimToken)
+			delete(c.identities, entry.approvalID)
+			return nil
+		}) {
+			return fail(WitnessStale)
+		}
 		return WitnessResult{Outcome: Witnessed, Binding: entry.binding, Digest: respDigest}
 
 	default:
