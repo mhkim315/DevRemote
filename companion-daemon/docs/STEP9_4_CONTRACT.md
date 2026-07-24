@@ -211,4 +211,3 @@ Stop and reject if a change:
 - treats emulator evidence as SM-S926N physical-device proof; or
 - claims a physical-device action without `USER_ACTION_REQUIRED` evidence.
 
-
