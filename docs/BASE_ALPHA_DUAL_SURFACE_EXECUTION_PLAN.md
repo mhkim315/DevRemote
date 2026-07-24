@@ -1,6 +1,6 @@
 # Base Alpha Dual-Surface Managed Session Execution Plan
 
-**Status:** AUTHORITATIVE — EXECUTION MAY BEGIN ONLY AT `DS-CX1`
+**Status:** AUTHORITATIVE — DS-0 COMPLETED, NEXT EXECUTABLE: `DS-CX1`
 
 **Planning baseline:** `21a8d973999631ec1c56abd57b790a51b4ecfb7b`
 
