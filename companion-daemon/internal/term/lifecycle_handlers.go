@@ -34,13 +34,18 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	epRes, err := h.reserveEpoch(r)
+	tok, err := h.reserveEpoch(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	defer epRes.Release()
 	res, err := h.Lifecycle.Stop(r.Context(), r.PathValue("id"))
+	if err == nil {
+		if cerr := h.commitEpoch(tok); cerr != nil {
+			http.Error(w, cerr.Error(), http.StatusConflict)
+			return
+		}
+	}
 	h.auditLifecycle(r, devicetrust.ActionSessionStop, res, err)
 	writeLifecycleResult(w, res, err)
 }
@@ -51,13 +56,18 @@ func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	epRes, err := h.reserveEpoch(r)
+	tok, err := h.reserveEpoch(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	defer epRes.Release()
 	res, err := h.Lifecycle.Kill(r.Context(), r.PathValue("id"))
+	if err == nil {
+		if cerr := h.commitEpoch(tok); cerr != nil {
+			http.Error(w, cerr.Error(), http.StatusConflict)
+			return
+		}
+	}
 	h.auditLifecycle(r, devicetrust.ActionSessionKill, res, err)
 	writeLifecycleResult(w, res, err)
 }
@@ -69,13 +79,18 @@ func (h *Handlers) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
 	}
-	epRes, err := h.reserveEpoch(r)
+	tok, err := h.reserveEpoch(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	defer epRes.Release()
 	res, err := h.Lifecycle.Delete(r.Context(), r.PathValue("id"))
+	if err == nil {
+		if cerr := h.commitEpoch(tok); cerr != nil {
+			http.Error(w, cerr.Error(), http.StatusConflict)
+			return
+		}
+	}
 	writeLifecycleResult(w, res, err)
 }
 

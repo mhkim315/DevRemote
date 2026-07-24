@@ -85,12 +85,11 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 	// an epoch reservation before the first approval mutation. The reservation
 	// holds the registry lock so revoke cannot interleave during the entire
 	// claim→delivery→commit window.
-	epRes, err := h.reserveEpoch(r)
+	tok, err := h.reserveEpoch(r)
 	if err != nil {
 		h.writeApprovalOutcome(w, sessionID, approvalID, req.Action, "stale_epoch", http.StatusConflict)
 		return
 	}
-	defer epRes.Release()
 
 	claim := h.Approvals.ClaimForExecution(ClaimRequest{
 		SessionID:      sessionID,
@@ -100,7 +99,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		Runtime:        runtime,
 		Requester:      requester,
 		IdempotencyKey: req.IdempotencyKey,
-		EpochRecheck:   func() error { return nil },
+		EpochRecheck:   func() error { return h.commitEpoch(tok) },
 	})
 	switch claim.Outcome {
 	case ClaimAlreadyAccepted:
@@ -134,7 +133,7 @@ func (h *Handlers) HandleApprovalAction(w http.ResponseWriter, r *http.Request) 
 		EpochRecheck: func() error { return nil },
 	})
 	// Reservation held: epoch cannot change during commit.
-	commit := h.Approvals.RecordDelivery(receipt, func() error { return nil })
+	commit := h.Approvals.RecordDelivery(receipt, func() error { return h.commitEpoch(tok) })
 	if commit.Committed {
 		h.writeApprovalSuccess(w, sessionID, approvalID, req.Action, commit.Kind, string(commit.Outcome))
 		return

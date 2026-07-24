@@ -263,31 +263,32 @@ func (r *DeviceRegistry) GetAuth(deviceID string) AuthorizationState {
 	return AuthorizationState{Epoch: uint64(d.Epoch), Active: true}
 }
 
-// ── 9.4-D: Epoch reservation protocol ──
+// ── 9.4-D: Token-based epoch commit protocol ──
+//
+// ReserveEpoch issues a lightweight EpochToken (lock held briefly, then
+// released). The caller performs mutation I/O with the token, then calls
+// CommitEpoch to atomically re-validate the epoch against the current
+// registry state. Revoke bumps the epoch → all in-flight tokens become
+// invalid at commit time.
+//
+// This avoids holding the registry lock across I/O (provider delivery,
+// process spawn, WebSocket writes).
 
-// EpochReservation holds the registry lock across a mutation so that revoke
-// cannot interleave between the epoch check and the mutation commit. The
-// caller MUST call Release() after the mutation completes; typically via
-// defer. Release is safe to call on a nil receiver.
-type EpochReservation struct {
-	reg      *DeviceRegistry
+// EpochToken is a lightweight epoch snapshot. It does NOT hold the registry
+// lock — the lock is released before ReserveEpoch returns.
+type EpochToken struct {
 	DeviceID string
 	Epoch    uint64
 }
 
-// Release unlocks the registry. Safe to call on a nil receiver.
-func (r *EpochReservation) Release() {
-	if r == nil || r.reg == nil {
-		return
-	}
-	r.reg.mu.Unlock()
-}
-
 // ReserveEpoch atomically validates that the device is active and its current
-// epoch matches expectedEpoch. On success the registry lock is HELD and the
-// caller must call Release() to drop it. On failure the lock is released
-// before returning.
-func (reg *DeviceRegistry) ReserveEpoch(deviceID string, expectedEpoch uint64) (*EpochReservation, error) {
+// epoch matches expectedEpoch. On success returns a token (lock released);
+// on failure the lock is released before returning.
+// Nil registry → fail-closed (ErrStaleDevice).
+func (reg *DeviceRegistry) ReserveEpoch(deviceID string, expectedEpoch uint64) (*EpochToken, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("%w: no device registry configured", ErrStaleDevice)
+	}
 	reg.mu.Lock()
 	d, ok := reg.devices[deviceID]
 	if !ok || d.Revoked() {
@@ -298,7 +299,31 @@ func (reg *DeviceRegistry) ReserveEpoch(deviceID string, expectedEpoch uint64) (
 		reg.mu.Unlock()
 		return nil, fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
 	}
-	return &EpochReservation{reg: reg, DeviceID: deviceID, Epoch: uint64(d.Epoch)}, nil
+	tok := &EpochToken{DeviceID: deviceID, Epoch: uint64(d.Epoch)}
+	reg.mu.Unlock()
+	return tok, nil
+}
+
+// CommitEpoch atomically re-validates the token against the current registry
+// state. Returns nil if the epoch matches; ErrStaleDevice otherwise.
+// Nil token → no-op (insecure-local path).
+func (reg *DeviceRegistry) CommitEpoch(tok *EpochToken) error {
+	if tok == nil {
+		return nil
+	}
+	if reg == nil {
+		return fmt.Errorf("%w: no device registry configured", ErrStaleDevice)
+	}
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	d, ok := reg.devices[tok.DeviceID]
+	if !ok || d.Revoked() {
+		return fmt.Errorf("%w: device is not active", ErrStaleDevice)
+	}
+	if uint64(d.Epoch) != tok.Epoch {
+		return fmt.Errorf("%w: epoch changed from %d to %d", ErrStaleDevice, tok.Epoch, d.Epoch)
+	}
+	return nil
 }
 
 // GetEpoch returns the current authorization epoch for a device.

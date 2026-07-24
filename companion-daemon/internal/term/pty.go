@@ -65,13 +65,16 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// M1 safe create: profileId present -> daemon-owned launch. The daemon
 		// generates the canonical ID and resolves the executable by policy.
 		if req.ProfileID != "" {
-			epRes, err := h.reserveEpoch(r)
+			tok, err := h.reserveEpoch(r)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-			defer epRes.Release()
 			h.createFromProfile(w, r, req)
+			if err := h.commitEpoch(tok); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			return
 		}
 
@@ -111,13 +114,18 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 					writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 					return
 				}
-				epRes, err := h.reserveEpoch(r)
+				tok, err := h.reserveEpoch(r)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusConflict)
 					return
 				}
-				defer epRes.Release()
 				res, lerr := h.Lifecycle.Delete(r.Context(), id)
+				if lerr == nil {
+					if err := h.commitEpoch(tok); err != nil {
+						http.Error(w, err.Error(), http.StatusConflict)
+						return
+					}
+				}
 				writeLifecycleResult(w, res, lerr)
 				return
 			}
@@ -134,11 +142,11 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", 405)
 }
 
-// reserveEpoch acquires an epoch reservation that holds the registry lock
-// across the mutation commit. The caller MUST defer epRes.Release(). On failure
-// the lock is released before returning; on success the caller owns it.
-// Nil principal → nil reservation (insecure-local mode).
-func (h *Handlers) reserveEpoch(r *http.Request) (*devicetrust.EpochReservation, error) {
+// reserveEpoch atomically validates the principal's device epoch and returns
+// a lightweight token (lock held briefly, released before return). The caller
+// performs mutation I/O with the token, then calls commitEpoch to re-validate.
+// Nil principal → nil token (insecure-local mode).
+func (h *Handlers) reserveEpoch(r *http.Request) (*devicetrust.EpochToken, error) {
 	p := devicetrust.PrincipalFromContext(r.Context())
 	if p == nil {
 		return nil, nil // insecure-local: no principal to check
@@ -149,13 +157,25 @@ func (h *Handlers) reserveEpoch(r *http.Request) (*devicetrust.EpochReservation,
 	return h.DeviceRegistry.ReserveEpoch(p.DeviceID, uint64(p.DeviceEpoch))
 }
 
-// recheckPrincipal is used by long-lived WebSocket connections whose
-// authenticated ticket principal is not stored in the HTTP request context.
-func (h *Handlers) recheckPrincipal(p *devicetrust.Principal) error {
-	if h.SessionMgr == nil {
+// commitEpoch re-validates the token against the current registry state.
+// Nil token → no-op.
+func (h *Handlers) commitEpoch(tok *devicetrust.EpochToken) error {
+	if h.DeviceRegistry == nil {
 		return nil
 	}
-	return devicetrust.RecheckEpoch(h.SessionMgr.GetAuth, p)
+	return h.DeviceRegistry.CommitEpoch(tok)
+}
+
+// reservePrincipal issues an epoch token for a WebSocket-connected principal.
+// The caller performs the I/O (input write), then calls commitEpoch on the token.
+func (h *Handlers) reservePrincipal(p *devicetrust.Principal) (*devicetrust.EpochToken, error) {
+	if p == nil {
+		return nil, nil
+	}
+	if h.DeviceRegistry == nil {
+		return nil, nil
+	}
+	return h.DeviceRegistry.ReserveEpoch(p.DeviceID, uint64(p.DeviceEpoch))
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -472,8 +492,12 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// A frame above the raw protocol bound cannot be safely dispatched by
 			// a partial parse. Return the closed oversized result directly.
 			if len(msg) > inputMaxRawFrame {
+				wsTok, wsTokErr := h.reservePrincipal(ticketPrincipal)
+				if wsTokErr != nil {
+					continue
+				}
 				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return h.recheckPrincipal(ticketPrincipal)
+					return h.commitEpoch(wsTok)
 				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
@@ -486,8 +510,12 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// the partially decoded request on unknown/trailing JSON, so malformed
 			// terminal_input is rejected rather than silently ignored by dispatch.
 			if req, _, _ := parseInputControlRequest(msg); req != nil && req.Type == "terminal_input" {
+				wsTok, wsTokErr := h.reservePrincipal(ticketPrincipal)
+				if wsTokErr != nil {
+					continue
+				}
 				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
-					return h.recheckPrincipal(ticketPrincipal)
+					return h.commitEpoch(wsTok)
 				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
@@ -541,7 +569,8 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		}
 		// A ticket remains bound to its device for the lifetime of this socket,
 		// so revoke/rebind must be checked immediately before raw input delivery.
-		if err := h.recheckPrincipal(ticketPrincipal); err != nil {
+		tok, err := h.reservePrincipal(ticketPrincipal)
+		if err != nil {
 			if time.Since(lastDenial) > time.Second {
 				select {
 				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: readOnlyDenialPayload}:
@@ -558,7 +587,7 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 				break
 			}
 			written, inErr := inputTransport.WriteInput(msg, func() error {
-				if err := h.recheckPrincipal(ticketPrincipal); err != nil {
+				if err := h.commitEpoch(tok); err != nil {
 					return err
 				}
 				// PA3 Step 6b/T3: begin echo suppression under the same
@@ -833,14 +862,17 @@ func (h *Handlers) HandleCmd(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		// The command broker is a remote terminal-input mutation. Guard the
 		// enqueue boundary as well as the WebSocket transport path.
-		epRes, err := h.reserveEpoch(r)
+		tok, err := h.reserveEpoch(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		defer epRes.Release()
 		body, _ := io.ReadAll(r.Body)
 		h.Cmds.Put(session, body)
+		if err := h.commitEpoch(tok); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		log.Printf("CMD POST [%s]: %q", session, string(body))
 		w.WriteHeader(200)
 		return
