@@ -11,12 +11,12 @@ function mockResponse(status: number, body: any) {
 function validSegment(overrides: any = {}) {
   return { id: 'abc123', seq: 0, sessionId: 'controlled_pty:test',
     kind: 'agent_event', source: 'agent_event', text: 'hello',
-    observedAt: '2026-07-13T10:00:00.000Z', contractVersion: 't3.1', ...overrides };
+    observedAt: '2026-07-13T10:00:00.000Z', contractVersion: 't3.2', ...overrides };
 }
 
 function validResponse(overrides: any = {}) {
   return { sessionId: 'controlled_pty:test', semantic: [validSegment()],
-    fallback: [], primarySource: 'agent_event', contractVersion: 't3.1', ...overrides };
+    fallback: [], primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2', ...overrides };
 }
 
 describe('getTranscript', () => {
@@ -55,7 +55,7 @@ describe('validateTranscriptResponse', () => {
 
   it('rejects missing semantic array', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200,
-      { sessionId: 'controlled_pty:test', primarySource: 'agent_event', contractVersion: 't3.1' }));
+      { sessionId: 'controlled_pty:test', primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2' }));
     expect(await getTranscript('controlled_pty:test', 't')).toBeNull();
   });
 
@@ -120,7 +120,7 @@ describe('validateSegment', () => {
     // terminal_output segment but primarySource claims agent_event → reject.
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 'controlled_pty:test', semantic: [validSegment({ kind: 'terminal_output', source: 'byte_stream' })],
-      fallback: [], primarySource: 'agent_event', contractVersion: 't3.1',
+      fallback: [], primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     expect(await getTranscript('controlled_pty:test', 't')).toBeNull();
   });
@@ -130,7 +130,7 @@ describe('validateSegment', () => {
       sessionId: 'controlled_pty:test',
       semantic: [validSegment()],
       fallback: [validSegment({ id: 'def456', seq: 0, kind: 'terminal_output', source: 'byte_stream' })],
-      primarySource: 'agent_event', contractVersion: 't3.1',
+      primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     const resp = await getTranscript('controlled_pty:test', 't');
     expect(resp).not.toBeNull();
@@ -143,7 +143,7 @@ describe('TranscriptResponse channels', () => {
   it('semantic-only with agent_event', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [{ ...validSegment({ sessionId: 's' }), kind: 'agent_event', source: 'agent_event' }],
-      fallback: [], primarySource: 'agent_event', contractVersion: 't3.1',
+      fallback: [], primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -155,7 +155,7 @@ describe('TranscriptResponse channels', () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [],
       fallback: [{ ...validSegment({ id: 'f1', sessionId: 's' }), kind: 'terminal_output', source: 'byte_stream' }],
-      primarySource: 'byte_stream', contractVersion: 't3.1',
+      primarySource: 'byte_stream', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -168,7 +168,7 @@ describe('TranscriptResponse channels', () => {
       sessionId: 's',
       semantic: [{ ...validSegment({ sessionId: 's' }), source: 'agent_event' }],
       fallback: [{ ...validSegment({ id: 'f1', sessionId: 's' }), kind: 'terminal_output', source: 'byte_stream' }],
-      primarySource: 'agent_event', contractVersion: 't3.1',
+      primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -179,7 +179,7 @@ describe('TranscriptResponse channels', () => {
   it('byteStreamSuppressed flag present', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [], fallback: [],
-      primarySource: 'byte_stream', byteStreamSuppressed: true, contractVersion: 't3.1',
+      primarySource: 'byte_stream', byteStreamSuppressed: true, availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -190,7 +190,7 @@ describe('TranscriptResponse channels', () => {
   it('semantic-only with agent_event', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [validSegment({ sessionId: 's', kind: 'agent_event', source: 'agent_event' })],
-      fallback: [], primarySource: 'agent_event', contractVersion: 't3.1',
+      fallback: [], primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -202,7 +202,7 @@ describe('TranscriptResponse channels', () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [],
       fallback: [validSegment({ id: 'f1', sessionId: 's', kind: 'terminal_output', source: 'byte_stream' })],
-      primarySource: 'byte_stream', contractVersion: 't3.1',
+      primarySource: 'byte_stream', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -215,7 +215,7 @@ describe('TranscriptResponse channels', () => {
       sessionId: 's',
       semantic: [validSegment({ id: 's1', sessionId: 's', source: 'agent_event' })],
       fallback: [validSegment({ id: 'f1', sessionId: 's', kind: 'terminal_output', source: 'byte_stream' })],
-      primarySource: 'agent_event', contractVersion: 't3.1',
+      primarySource: 'agent_event', availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();
@@ -226,7 +226,7 @@ describe('TranscriptResponse channels', () => {
   it('byteStreamSuppressed flag present', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce(mockResponse(200, {
       sessionId: 's', semantic: [], fallback: [],
-      primarySource: 'byte_stream', byteStreamSuppressed: true, contractVersion: 't3.1',
+      primarySource: 'byte_stream', byteStreamSuppressed: true, availability: 'healthy', contractVersion: 't3.2',
     }));
     const r = await getTranscript('s', 't');
     expect(r).not.toBeNull();

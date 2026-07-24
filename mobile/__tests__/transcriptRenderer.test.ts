@@ -5,7 +5,7 @@ function makeSegment(overrides: any = {}) {
     id: 'abc', seq: 0, sessionId: 's',
     kind: 'agent_event', source: 'agent_event', text: 'hello',
     agentKind: 'codex', eventType: 'assistant_message',
-    observedAt: '2026-01-01T00:00:00.000Z', contractVersion: 't3.1',
+    observedAt: '2026-01-01T00:00:00.000Z', contractVersion: 't3.2',
     ...overrides,
   };
 }
