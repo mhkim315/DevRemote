@@ -3,6 +3,12 @@
 How to set up, instrument, run, and collect evidence for emulator and
 physical-device testing. Written 2026-07-24 from the SM-S926N device gate.
 
+> **Fresh-agent entry point:** start with
+> [`DEVICE_TEST_AGENT_ONBOARDING.md`](DEVICE_TEST_AGENT_ONBOARDING.md). It
+> defines identity gates, authority limits, privacy, terminal setup, failure
+> handling, and the complete run/verifier handoff. This document remains the
+> command and troubleshooting reference.
+
 ## Environment Setup
 
 ### Terminals (iTerm2 — 3 minimum)
@@ -249,23 +255,31 @@ npx tapflow start > /tmp/tapflow.log 2>&1 &
 ### Admin + PAT Creation
 
 ```sh
+: "${RUN_PRIVATE:?follow DEVICE_TEST_AGENT_ONBOARDING.md and set RUN_PRIVATE}"
+umask 077
+TAPFLOW_PASSWORD="$(openssl rand -hex 24)"
+TAPFLOW_COOKIES="$RUN_PRIVATE/tapflow-cookies.txt"
+
 # Create admin (first time):
 curl -s -X POST http://localhost:4000/api/v1/auth/init \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@tapflow.local","password":"testpass123"}'
+  -d "{\"email\":\"admin@tapflow.local\",\"password\":\"$TAPFLOW_PASSWORD\"}"
 
 # Login:
 curl -s -X POST http://localhost:4000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@tapflow.local","password":"testpass123"}' \
-  -c /tmp/cookies.txt
+  -d "{\"email\":\"admin@tapflow.local\",\"password\":\"$TAPFLOW_PASSWORD\"}" \
+  -c "$TAPFLOW_COOKIES"
 
 # Create PAT (1 day):
 curl -s -X POST http://localhost:4000/api/v1/tokens \
   -H "Content-Type: application/json" \
-  -b /tmp/cookies.txt \
+  -b "$TAPFLOW_COOKIES" \
   -d '{"name":"POKIT Test","expiresIn":86400}'
 ```
+
+Store the returned PAT only under `$RUN_PRIVATE`, never in shell history,
+tracked files, or a prompt. Delete the PAT and cookie file during run cleanup.
 
 ### Direct MCP Client (Node.js)
 
