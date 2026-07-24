@@ -312,6 +312,17 @@ func (m *DeviceSessionManager) CreateAfterVerifiedChallenge(
 	}
 	m.sessions[digest] = sess
 	m.byDevice[deviceID] = digest
+	if m.GetAuth != nil {
+		auth2 := m.GetAuth(deviceID)
+		if !auth2.Active || auth2.Epoch != uint64(expectedEpoch) {
+			delete(m.sessions, digest)
+			delete(m.byDevice, deviceID)
+			cb := m.onRevoke
+			m.mu.Unlock()
+			notifyInvalidated(cb, expiredDeviceIDs)
+			return "", "", time.Time{}, fmt.Errorf("auth state changed during insert")
+		}
+	}
 	replaceCB := m.onReplace
 	invalidateCB := m.onRevoke
 	m.mu.Unlock()
