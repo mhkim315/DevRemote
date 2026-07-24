@@ -609,9 +609,12 @@ func (c *claudeResumeCoordinator) ClaimWrite(claimToken, resumeNonce, sessionID,
 		}
 		// B2: reject late hooks — the entry must not be expired.
 		if clockNow().After(entry.createdAt.Add(coordinatorEntryTimeout)) {
-			entry.state = stateTerminal
-			entry.completion <- TerminalResult{Outcome: TerminalTimeout}
-			delete(c.entries, claimToken)
+			c.authorizeEntryLocked(entry, devicetrust.IntentApprovalDeliver, func() error {
+				entry.state = stateTerminal
+				entry.completion <- TerminalResult{Outcome: TerminalTimeout}
+				delete(c.entries, claimToken)
+				return nil
+			})
 			return WriteHandle{}, outcomeStale
 		}
 
@@ -681,19 +684,22 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	}
 	// B2: late confirmation — the write took too long.
 	if clockNow().After(entry.writeClaimedAt.Add(coordinatorEntryTimeout)) {
-		entry.state = stateTerminal
-		entry.earlyWitness = nil
-		entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
-		delete(c.entries, claimToken)
-		return outcomeAmbiguous
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.state = stateTerminal
+			entry.earlyWitness = nil
+			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+			delete(c.entries, claimToken)
+			return nil
+		})
 	}
 	if !writeOK {
-		// Write failed: ambiguous because partial bytes may have been sent.
-		// Wipe any stored early witness.
-		entry.earlyWitness = nil
-		entry.state = stateTerminal
-		entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
-		delete(c.entries, claimToken)
+		c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+			entry.earlyWitness = nil
+			entry.state = stateTerminal
+			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+			delete(c.entries, claimToken)
+			return nil
+		})
 		return outcomeAmbiguous
 	}
 	// writeOK == true
@@ -710,9 +716,12 @@ func (c *claudeResumeCoordinator) ConfirmWrite(claimToken string, writeOK bool) 
 	case stateWitnessPending:
 		// R4: commit the stored early witness.
 		if entry.earlyWitness == nil || entry.attempt == nil {
-			entry.state = stateTerminal
-			entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
-			delete(c.entries, claimToken)
+			c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+				entry.state = stateTerminal
+				entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}
+				delete(c.entries, claimToken)
+				return nil
+			})
 			return outcomeAmbiguous
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
@@ -994,8 +1003,11 @@ func (c *claudeResumeCoordinator) MarkWitnessed(claimToken string, kind WitnessK
 
 	case stateDecisionWritten:
 		if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
-			entry.state = stateTerminal
-			delete(c.entries, claimToken)
+			c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+				entry.state = stateTerminal
+				delete(c.entries, claimToken)
+				return nil
+			})
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))
@@ -1043,14 +1055,17 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 
 	if len(matches) != 1 {
 		if len(matches) > 1 {
-			entry.earlyWitness = nil
-			entry.state = stateTerminal
-			select {
-			case entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}:
-			default:
-			}
-			delete(c.entries, claimToken)
-			delete(c.identities, entry.approvalID)
+			c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+				entry.earlyWitness = nil
+				entry.state = stateTerminal
+				select {
+				case entry.completion <- TerminalResult{Outcome: TerminalAmbiguous}:
+				default:
+				}
+				delete(c.entries, claimToken)
+				delete(c.identities, entry.approvalID)
+				return nil
+			})
 		}
 		return fail(WitnessMismatch)
 	}
@@ -1092,8 +1107,11 @@ func (c *claudeResumeCoordinator) MarkDenialWitness(claimToken, denialSessionID 
 
 	case stateDecisionWritten:
 		if clockNow().After(entry.decisionWrittenAt.Add(2 * coordinatorEntryTimeout)) {
-			entry.state = stateTerminal
-			delete(c.entries, claimToken)
+			c.authorizeEntryLocked(entry, devicetrust.IntentApprovalCommit, func() error {
+				entry.state = stateTerminal
+				delete(c.entries, claimToken)
+				return nil
+			})
 			return fail(WitnessStale)
 		}
 		respDigest := payloadDigest(claudeHookResponseBytes(entry.decision))

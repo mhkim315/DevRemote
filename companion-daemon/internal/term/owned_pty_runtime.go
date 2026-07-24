@@ -40,6 +40,7 @@ type OwnedPTYRuntime struct {
 	mu                  sync.Mutex
 	entries             map[string]*CatalogEntry
 	nextGen             int64
+	pending             map[string]int64 // canonicalID → reserved generation
 	now                 func() time.Time
 	lockMu              sync.Mutex
 	locks               map[string]*sync.Mutex
@@ -50,7 +51,7 @@ func NewOwnedPTYRuntime(authorizer devicetrust.MutationAuthorizer, v1 ManagedPTY
 	if authorizer == nil {
 		return nil, fmt.Errorf("owned PTY mutation authorizer is required")
 	}
-	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer}, nil
+	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), pending: make(map[string]int64), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer}, nil
 }
 func (o *OwnedPTYRuntime) SetStatusClearer(c StatusClearer) { o.status = c }
 func (o *OwnedPTYRuntime) Transport(id string) (*TerminalTransport, bool) {
@@ -78,17 +79,18 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	if o.v1Spawn == nil {
 		return "", fmt.Errorf("no V1 launcher")
 	}
+	canonicalID := "controlled_pty:" + cfg.Name
 	var reservedGen int64
 	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
 		o.mu.Lock()
 		o.nextGen++
 		reservedGen = o.nextGen
+		o.pending[canonicalID] = reservedGen
 		o.mu.Unlock()
 		return nil
 	}); err != nil {
 		return "", err
 	}
-	canonicalID := "controlled_pty:" + cfg.Name
 	// Retire the exact prior generation before launching a replacement. The
 	// generation check inside finalize prevents a stale cleanup from touching a
 	// later launch with the same canonical id.
@@ -97,24 +99,44 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	}
 	result, err := o.v1Spawn.Spawn(ctx, cfg)
 	if err != nil {
+		o.mu.Lock()
+		delete(o.pending, canonicalID)
+		o.mu.Unlock()
 		return "", err
 	}
 	if result.Handle == nil || result.ProcessCleanup == nil || result.Identity.InstanceID == "" {
 		if result.ProcessCleanup != nil {
 			result.ProcessCleanup.Execute(ctx)
 		}
+		o.mu.Lock()
+		delete(o.pending, canonicalID)
+		o.mu.Unlock()
 		return "", fmt.Errorf("V1 launcher returned incomplete launch result")
 	}
 	stream, ok := result.Handle.(interface{ Read([]byte) (int, error) })
 	if !ok {
 		result.ProcessCleanup.Execute(ctx)
+		o.mu.Lock()
+		delete(o.pending, canonicalID)
+		o.mu.Unlock()
 		return "", fmt.Errorf("V1 handle does not expose a PTY stream")
 	}
+	// Publish only if our reservation is still current. A stale reservation
+	// means another create or revoke beat us — roll back the spawned process.
+	o.mu.Lock()
+	current, stillCurrent := o.pending[canonicalID]
+	if !stillCurrent || current != reservedGen {
+		o.mu.Unlock()
+		result.ProcessCleanup.Execute(ctx)
+		return "", fmt.Errorf("create reservation overtaken")
+	}
+	delete(o.pending, canonicalID)
 	ps := &handleStream{PTYHandle: result.Handle, reader: stream}
 	rec := StartRecorderUnconditional(canonicalID, ps)
 	transport := newTerminalTransport(canonicalID, 0, handleWriter{result.Handle}, result.Handle, rec, o.authorizer)
 	cleanup := func(c context.Context) CleanupOutcome { return result.ProcessCleanup.Execute(c) }
-	gen := o.registerGen(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec, reservedGen)
+	gen := o.registerGenLocked(canonicalID, profileID, name, result.Handle, result.Identity, cleanup, transport, rec, reservedGen)
+	o.mu.Unlock()
 	o.watchExit(canonicalID, gen, rec)
 	return canonicalID, nil
 }
@@ -143,6 +165,20 @@ func (o *OwnedPTYRuntime) register(id, profileID, name string, handle PTYHandle,
 func (o *OwnedPTYRuntime) registerGen(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, reservedGen int64) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if reservedGen > 0 {
+		o.nextGen = reservedGen
+	} else {
+		o.nextGen++
+	}
+	g := o.nextGen
+	if old := o.entries[id]; old != nil && old.transport != nil {
+		old.transport.Retire()
+	}
+	transport.generation = g
+	o.entries[id] = &CatalogEntry{ID: id, Adapter: "controlled_pty", ProfileID: profileID, Name: name, State: LifecycleRunning, StartedAt: identity.StartedAt, Generation: g, Identity: identity, handle: handle, cleanup: cleanup, transport: transport, recorder: rec, cleanupDone: make(chan struct{})}
+	return g
+}
+func (o *OwnedPTYRuntime) registerGenLocked(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, reservedGen int64) int64 {
 	if reservedGen > 0 {
 		o.nextGen = reservedGen
 	} else {
