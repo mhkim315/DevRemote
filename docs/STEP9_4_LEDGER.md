@@ -1,9 +1,10 @@
 # Step 9.4 — Secure Accountless Onboarding Ledger
 
-**Status:** IMPLEMENTATION ACCEPTED — PHYSICAL GATE + DOCS PENDING
+**Status:** STEP 9.4 ACCEPTED — STEP 9.5 ARTIFACT/PHYSICAL GATE SEPARATE
 **Branch:** `feature/canonical-timeline-foundation`
 **Started:** 2026-07-24
-**Last update:** V2 final-ready (ledger cleanup SHA 694eb73ee)
+**Last update:** Step 9.4 ACCEPT recorded by the authoritative Alpha roadmap;
+Step 9.5 build/artifact remediation is tracked separately
 
 ## Key Identities
 
@@ -18,6 +19,7 @@
 | Integrated V1 | ACCEPTED | `5632868c6` | — |
 | Pairing order fix | V1_ACCEPT | `f76042ed3` | 2 (T2) |
 | Contract + ledger sync | Ready for V2 final | `1a00c8c52` | — |
+| Step 9.4 independent closeout | ACCEPTED | `238f063a8` | — |
 
 ### Pairing verification order (corrected at f76042ed3)
 handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → device proof → host proof. Mismatch fails closed before challenged state.
@@ -48,3 +50,4 @@ handleCandidate: BootstrapToken validation → bridge.Verify (pre-proof) → dev
 | 2026-07-24 | V1 pairing order fix ACCEPT at f76042ed3 |
 | 2026-07-24 | Ledger cleanup at 694eb73ee |
 | 2026-07-24 | V2 + evidence sync ready for V2 final (eeb95a223) |
+| 2026-07-24 | Step 9.4 independent closeout ACCEPT at 238f063a8; physical Base Alpha artifact gate moved to Step 9.5 |

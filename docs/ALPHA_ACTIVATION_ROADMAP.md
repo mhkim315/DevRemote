@@ -1,6 +1,6 @@
 # POKIT Base Alpha Activation Roadmap
 
-**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c`; STEP 9.4 ACCEPTED at `238f063a8` (EVID: `STEP9_4_EVIDENCE.md`); STEP 9.5 NOT STARTED
+**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c`; STEP 9.4 ACCEPTED at `238f063a8` (EVID: `STEP9_4_EVIDENCE.md`); STEP 9.5 BLOCKED BY BUILD REPRODUCIBILITY REMEDIATION
 
 **Prerequisite:** Step 9.0 authority reconciliation received independent
 closeout at `62a50f0a8`. Step 9.1 Operational Timeline staging received
@@ -9,7 +9,10 @@ convergence received independent ACCEPT at `c82fef47f`. Step 9.3 N1
 exact-event notification-to-action received independent ACCEPT at
 `f7033b86c`. Step 9.4 Secure Accountless Onboarding received independent
 ACCEPT at `238f063a8` (V1+V2+EVID complete; contract `609127e29` +
-Amendment 1). Step 9.5 remains NOT STARTED.
+Amendment 1). Step 9.5 entered preflight but no production candidate or
+artifact bundle is frozen: clean Android artifact generation is blocked by the
+native-generation and Gradle compatibility failures recorded in
+[`STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md).
 
 The product boundary is:
 
@@ -268,10 +271,19 @@ accepted trust boundaries.
 
 ### Step 9.5 — Base Alpha candidate
 
-Freeze a reproducible production candidate, build matched daemon/APK artifacts,
-run automated safety gates, execute the bounded SM-S926N onboarding-to-N1
-matrix, publish exact known issues and release notes, obtain independent
-acceptance, and then begin dogfood.
+First complete and independently accept the mandatory
+[`Step 9.5 build-reproducibility remediation`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md).
+The waiting device-test agent remains blocked while daemon/APK identities or
+paths are unset. The pre-remediation diagnostic source `4e36f97b1...`, its
+partial daemon, the current documentation HEAD, and any prior APK are not a
+valid matched handoff.
+
+After remediation ACCEPT, freeze a new exact production candidate, build
+matched daemon/APK artifacts, run automated safety gates, execute the bounded
+SM-S926N onboarding-to-N1 matrix, publish exact known issues and release notes,
+obtain independent acceptance, and then begin dogfood. Run non-destructive
+physical smoke first; revoke/replacement recovery remains a separately
+authorized destructive profile.
 
 ### Later Manual Alpha — optional coordination and validation
 

@@ -7,14 +7,16 @@
 **Current execution state:** CT-P1 ACCEPTED (`317bb0cb76a73bd49bebaaede562bfa77cd1e7bc`).
 PB ACCEPTED (`5354077afcf30343d9666511e259346d9bea0ad6`). CT-P1 operational-evidence
 amendment ACCEPTED (`12135bd806e069d1487f7b0dad55bbe2bdb804f3`). Steps 4-8 operational
-foundation COMPLETE. CT-P2 and production Timeline wiring remain BLOCKED
-(separate post-PB packet required).
+foundation COMPLETE. Steps 9.0–9.4 are independently accepted under the
+bounded Alpha activation roadmap. Step 9.5 is blocked before artifact freeze
+by the clean Android build failures recorded in
+[`STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md).
 
 The current product state is **Post-PB foundation complete, alpha activation
-pending**. Step 9.0 is pending independent closeout. The bounded
-execution plan is authoritative in
-[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md); neither the Step
-9.0 acceptance nor this planning update authorizes Step 9.1 implementation.
+pending**. The bounded execution plan is authoritative in
+[`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). This planning
+update authorizes no remediation implementation or physical-device action;
+the new R0 contract must receive independent ACCEPT first.
 
 This document owns the current product definition, authority boundaries, MVP,
 and post-PB execution order. [`POST_PA3_AUTHORITATIVE_ROADMAP.md`](POST_PA3_AUTHORITATIVE_ROADMAP.md)
@@ -364,26 +366,29 @@ degraded/gap outcomes without replaying an invalid action.
    Step 8 (embedded under `--enable-cockpit`). (IMPL `a753e126c`, EVID `814868b5b`).
 8. **COMPLETE:** Mobile cockpit projection — ring-buffer polling, zero
    goroutines (EVID `093e03f04`).
-9. **PENDING INDEPENDENT CLOSEOUT (9.0):** Authority reconciliation,
-   foundation/capability/live-state audit, and ledger correction. Resolve the
-   candidate with
-   `git log -1 --format=%H -- docs/STEP9_0_LEDGER.md`; do not embed a
-   self-referential candidate SHA in the ledger.
-10. **PLANNED (9.1):** Minimal Operational Timeline staging — bounded Activity/N1
+9. **COMPLETE (9.0):** Authority reconciliation,
+   foundation/capability/live-state audit, and ledger correction. ACCEPT at
+   `62a50f0a8`; the ledger resolves its candidate from Git rather than
+   embedding a self-referential SHA.
+10. **COMPLETE (9.1):** Minimal Operational Timeline staging — bounded Activity/N1
     producer composition, failure isolation, mailbox/backpressure,
     drop/gap/degraded evidence, restart/filesystem failure, and capability
     state. No consumer-wide cutover.
-11. **PLANNED (9.2):** Canonical projection convergence — preserve Transcript
+11. **COMPLETE (9.2):** Canonical projection convergence — preserve Transcript
     authority, compare Timeline-derived Transcript/Activity projections, and
     switch at most one bounded consumer/endpoint per accepted packet with
     rollback and fallback.
-12. **PLANNED (9.3):** N1 exact-event notification-to-action — exact identity,
+12. **COMPLETE (9.3):** N1 exact-event notification-to-action — exact identity,
     authority re-query, closed outcomes, contextual actions, and safe fallback.
-13. **PLANNED (9.4):** Secure accountless onboarding — setup, provider/daemon
+13. **COMPLETE (9.4):** Secure accountless onboarding — setup, provider/daemon
     readiness, pairing/restoration, and first managed-session visibility.
-14. **PLANNED (9.5):** Base Alpha candidate — matched daemon/APK artifacts,
-    automated hard gates, SM-S926N onboarding-to-N1 matrix, known issues,
-    release notes, independent acceptance, and dogfood start.
+14. **BLOCKED (9.5):** Base Alpha candidate — clean Android artifact generation
+    exposed source-generation and Gradle compatibility failures. Complete the
+    independently reviewed
+    [`Step 9.5 build-reproducibility remediation`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md),
+    then freeze a new production source candidate and matched daemon/APK
+    artifacts before automated gates or the waiting SM-S926N tester resumes.
+    The diagnostic `4e36f97b1...` source/partial daemon is not a handoff.
 15. **LATER MANUAL ALPHA:** Explicit user-triggered coordination and frozen
     validation, workspace snapshot/lease only when required, optional Cockpit
     expansion, and explicit handoff.
@@ -391,8 +396,8 @@ degraded/gap outcomes without replaying an invalid action.
     only after measured demand and separate authorization.
 
 Steps 1–8 are accepted foundations, not proof of product-live composition.
-Step 9.0 is pending independent closeout and Step 9.1 remains blocked. After
-that closeout, Steps 9.1–9.5 are governed by
+Steps 9.0–9.4 are accepted. Step 9.5 is blocked only at the artifact/build
+precondition described above. Steps 9.1–9.5 are governed by
 [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA_ACTIVATION_ROADMAP.md). Do not
 automatically resume the historical full CT-P2 plan: only separately accepted,
 bounded Timeline producer composition, projection comparison, controlled
