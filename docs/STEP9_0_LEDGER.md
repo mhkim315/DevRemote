@@ -1,6 +1,8 @@
 # STEP 9.0 — Post-PB Feature Ledger
 
-**Status:** ACCEPTED at `e829299c6` — Step 9.3 complete.
+**Status:** HISTORICAL FOUNDATION LEDGER — Steps 9.0–9.4 accepted; Step 9.5
+dogfood acceptance blocked by
+[`BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
 
 **Candidate resolver:** `git log -1 --format=%H -- docs/STEP9_0_LEDGER.md`
 **Date:** 2026-07-23
@@ -86,8 +88,10 @@ The post-9.0 execution order is defined in [`ALPHA_ACTIVATION_ROADMAP.md`](ALPHA
 - **9.2** — Transcript/Activity projection convergence — **ACCEPTED at `c82fef47f`.**
 - **9.3** — N1 exact-event notification-to-action — **ACCEPTED at `f7033b86c`.**
 - **9.4** — Secure accountless onboarding — **ACCEPTED at `238f063a8`.**
-- **9.5** — Matched Base Alpha candidate + SM-S926N product gate
+- **9.5** — Terminal-first/managed-Transcript remediation, then a new matched
+  Base Alpha candidate + SM-S926N product gate
 - **Beyond** — Manual Alpha coordination, CT-P2, automation (separate authorization)
 
-Historical broad CT-P2 remains blocked. Step 9.5 remains not started until
-a separate reviewed implementation contract is accepted.
+Historical broad CT-P2 remains blocked. Step 9.5 cannot receive dogfood
+acceptance until remediation R0–R8 completes. R0 is documentation-only; R1 or
+production implementation must not begin until R0 receives independent ACCEPT.

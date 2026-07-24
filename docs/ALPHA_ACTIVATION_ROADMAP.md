@@ -1,6 +1,6 @@
 # POKIT Base Alpha Activation Roadmap
 
-**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c`; STEP 9.4 ACCEPTED at `238f063a8` (EVID: `STEP9_4_EVIDENCE.md`); STEP 9.5 BLOCKED BY BUILD REPRODUCIBILITY REMEDIATION
+**Status:** AUTHORITATIVE POST-9.0 EXECUTION PLAN — STEP 9.0 ACCEPTED at `62a50f0a8`; STEP 9.1 ACCEPTED at `dc376f9b7`; STEP 9.2 ACCEPTED at `c82fef47f`; STEP 9.3 ACCEPTED at `f7033b86c`; STEP 9.4 ACCEPTED at `238f063a8` (EVID: `STEP9_4_EVIDENCE.md`); STEP 9.5 DOGFOOD ACCEPTANCE BLOCKED BY TERMINAL/MANAGED REMEDIATION
 
 **Prerequisite:** Step 9.0 authority reconciliation received independent
 closeout at `62a50f0a8`. Step 9.1 Operational Timeline staging received
@@ -9,15 +9,20 @@ convergence received independent ACCEPT at `c82fef47f`. Step 9.3 N1
 exact-event notification-to-action received independent ACCEPT at
 `f7033b86c`. Step 9.4 Secure Accountless Onboarding received independent
 ACCEPT at `238f063a8` (V1+V2+EVID complete; contract `609127e29` +
-Amendment 1). Step 9.5 entered preflight but no production candidate or
-artifact bundle is frozen: clean Android artifact generation is blocked by the
-native-generation and Gradle compatibility failures recorded in
-[`STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md).
+Amendment 1). Step 9.5 progressed through artifact and physical
+security-lifecycle work, but the later `DOGFOOD READY` claim is not accepted.
+The tracked artifact source predates later production/mobile fixes, Claude was
+routed into a Codex-only managed I/O surface, managed Transcript availability
+is not truthful, and the mobile full-suite gate is order-dependent. The
+authoritative continuation is
+[`BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
+The earlier build-reproducibility plan remains historical prerequisite
+evidence; it does not override the new matched-candidate requirement.
 
 The product boundary is:
 
-> **Managed native-session control first, structured operational views second,
-> Terminal as fallback, manual orchestration optional.**
+> **Terminal-first interactive control, provider-native managed Transcript
+> where explicitly selected, and manual orchestration optional.**
 
 The current state is:
 
@@ -31,7 +36,9 @@ feature is composed, enabled, healthy, or product-live.
 The first dogfoodable alpha must provide complete value with coordination,
 validation, workspace leases, and orchestration disabled. It includes only:
 
-- provider-native managed Codex and Claude sessions through `pokit run`;
+- explicit interactive (`controlled_pty`) Codex/Claude operation with Terminal
+  first, plus separately selected provider-native managed Codex and Claude
+  sessions with Transcript first;
 - exact provider/runtime/session/generation identity;
 - the existing Transcript service and API authority;
 - minimal Operational Canonical Timeline activation for Activity and N1;
@@ -41,8 +48,9 @@ validation, workspace leases, and orchestration disabled. It includes only:
 - secure accountless onboarding;
 - approval, deny, exact-generation acknowledged input, interrupt, stop, kill,
   reconnect, permission revalidation, and stale-generation rejection;
-- always-accessible Terminal fallback under the accepted `TerminalTransport`
-  and sole-reader `Recorder` boundaries;
+- always-accessible Terminal as the primary interactive surface and diagnostic
+  fallback under the accepted `TerminalTransport` and sole-reader `Recorder`
+  boundaries;
 - reproducible daemon/APK source and artifact identity; and
 - a bounded real-device alpha safety gate.
 
@@ -66,8 +74,8 @@ final architecture.
 | Surface | Alpha responsibility | Authority boundary |
 | --- | --- | --- |
 | **Activity** | Condensed operational events and intervention points | Projection only; never runtime, lifecycle, approval, input, or permission authority |
-| **Transcript** | Detailed chronological conversation and structured execution history | Existing Transcript service/API remains authoritative during migration |
-| **Terminal** | Raw PTY detail, diagnosis, recovery, and emergency operation | `TerminalTransport` remains exact-generation transport; `Recorder` remains sole PTY reader |
+| **Transcript** | Detailed chronological conversation and structured execution history; primary surface for explicitly selected native managed sessions | Existing Transcript service/API remains authoritative during migration |
+| **Terminal** | Primary interactive surface for `controlled_pty`; raw PTY detail, diagnosis, recovery, and emergency operation | `TerminalTransport` remains exact-generation transport; `Recorder` remains sole PTY reader |
 | **Cockpit** | Optional cross-session/workspace aggregation | Read-only optional projection; not the first entry point or a Base Alpha prerequisite |
 | **N1** | Notification entry into the exact relevant Activity event | Push payload is a locator, never authority |
 
@@ -75,13 +83,17 @@ Activity and Transcript remain distinct views. They converge gradually on
 shared event identity, session/runtime/generation, provenance, ordering/cursor,
 request/result and approval relationships, reconnect continuity, and explicit
 gap/degraded representation. They are not immediately merged into one feed.
-The default per-session view remains a dogfood decision. Terminal remains
-permanently accessible as a secondary/fallback surface.
+Runtime mode determines the initial view; dogfood may refine presentation
+within each mode but may not silently swap runtime authority. Terminal remains
+permanently accessible for interactive sessions and as the diagnostic fallback
+where a real PTY exists.
 
-The safest initial hierarchy is one per-session screen with explicit Activity
-and Transcript views and a persistent Terminal escape hatch. N1 opens the exact
-Activity event when available, then permits drill-down to Transcript or
-Terminal. Cockpit remains a separate optional aggregation.
+The safest initial hierarchy is runtime-mode specific: a `controlled_pty`
+session opens Terminal, while an explicitly selected native managed session
+opens its structured Transcript. N1 opens the exact Activity event when
+available, then permits drill-down to the surfaces supported by that runtime.
+There is no fake Terminal for a headless managed process. Cockpit remains a
+separate optional aggregation.
 
 ## 3. Capability model
 
@@ -94,7 +106,7 @@ activate another store, authority, lease, route, producer, or workflow.
 | Existing Transcript | Mandatory | Mandatory | Mandatory | Unavailable |
 | `operational_timeline` | Mandatory support; fail-open | Enabled | Enabled | Unavailable |
 | `n1_notifications` | Mandatory product support; OS permission remains user-controlled | Enabled | Enabled | Unavailable |
-| Terminal fallback | Mandatory | Mandatory | Mandatory | Unavailable |
+| Terminal-first interactive surface/fallback | Mandatory | Mandatory | Mandatory | Unavailable |
 | `cockpit` | Optional | Optional | Optional | Unavailable |
 | `manual_coordination` | Disabled | Explicit user action | May suggest; user confirms | Unavailable |
 | `manual_validation` | Disabled | Explicit user action | May suggest; user confirms | Unavailable |
@@ -271,19 +283,22 @@ accepted trust boundaries.
 
 ### Step 9.5 — Base Alpha candidate
 
-First complete and independently accept the mandatory
-[`Step 9.5 build-reproducibility remediation`](STEP9_5_BUILD_REPRODUCIBILITY_REMEDIATION_PLAN.md).
-The waiting device-test agent remains blocked while daemon/APK identities or
-paths are unset. The pre-remediation diagnostic source `4e36f97b1...`, its
-partial daemon, the current documentation HEAD, and any prior APK are not a
-valid matched handoff.
+Complete and independently accept
+[`Base Alpha Terminal-First and Managed Transcript Remediation`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
+The prior security-lifecycle result remains evidence for its exact artifact,
+not acceptance of later production/mobile fixes.
 
-After remediation ACCEPT, freeze a new exact production candidate, build
-matched daemon/APK artifacts, run automated safety gates, execute the bounded
-SM-S926N onboarding-to-N1 matrix, publish exact known issues and release notes,
-obtain independent acceptance, and then begin dogfood. Run non-destructive
-physical smoke first; revoke/replacement recovery remains a separately
-authorized destructive profile.
+The bounded order is R0 evidence reconciliation, R1 runtime/provider contract,
+R2 Terminal-first interactive path, R3 truthful Transcript availability, R4
+Codex managed Transcript, R5 Claude managed Transcript, R6 provider-specific
+input/lifecycle closeout, R7 input UX and deterministic tests, and R8 a new
+matched candidate/device gate. No implementation wave may skip its independent
+contract and evidence gates.
+
+After R0–R7 ACCEPT, freeze one new exact production candidate, build matched
+daemon/APK artifacts, run automated safety gates, execute the bounded SM-S926N
+matrix, publish exact known issues and release notes, obtain independent
+acceptance, and only then begin dogfood.
 
 ### Later Manual Alpha — optional coordination and validation
 
@@ -363,7 +378,7 @@ Stop a wave if it:
 | Required correction | Authoritative location |
 | --- | --- |
 | Base Alpha excludes coordination/validation | Sections 1 and 3 |
-| Product surfaces and Terminal fallback | Section 2 |
+| Runtime-specific product surfaces and Terminal-first boundary | Sections 2 and 9 |
 | Independent capability states | Section 3 |
 | Default-on-after-evidence, fail-open Timeline | Section 4 |
 | Bounded Transcript/Activity convergence | Section 5 |

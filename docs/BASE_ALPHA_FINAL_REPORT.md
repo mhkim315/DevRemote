@@ -1,9 +1,17 @@
 # POKIT Base Alpha — Final Report
 
-**Status:** DOGFOOD READY
+**Status:** SUPERSEDED — DOGFOOD ACCEPTANCE NOT GRANTED
 **HEAD:** 9e3822de6
 **Branch:** feature/canonical-timeline-foundation
 **Date:** 2026-07-25
+
+> This report records the state and claims made at `b476d8af7`. Independent
+> reconciliation found that the tracked daemon/APK were built from
+> `1bdf6b632`, before later production/mobile fixes; Claude managed I/O was
+> routed to Codex-only endpoints; and the full mobile test suite was not
+> deterministic. Preserve this document as historical evidence. Continue only
+> through
+> [`BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md`](BASE_ALPHA_TERMINAL_MANAGED_REMEDIATION_PLAN.md).
 
 ---
 
