@@ -80,6 +80,12 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		return "", fmt.Errorf("no V1 launcher")
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
+	// Retire the exact prior generation BEFORE reserving a new one.
+	// This must happen before AuthorizeAndCommit so a blocked slow create
+	// does not finalize a faster winner that already published.
+	if previous, ok := o.currentGeneration(canonicalID); ok {
+		o.finalize(canonicalID, previous)
+	}
 	var reservedGen int64
 	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
 		o.mu.Lock()
@@ -90,10 +96,6 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 		return nil
 	}); err != nil {
 		return "", err
-	}
-	// Retire the exact prior generation before launching a replacement.
-	if previous, ok := o.currentGeneration(canonicalID); ok {
-		o.finalize(canonicalID, previous)
 	}
 	result, err := o.v1Spawn.Spawn(ctx, cfg)
 	if err != nil {
