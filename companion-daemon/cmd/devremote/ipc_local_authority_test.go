@@ -18,8 +18,8 @@ import (
 
 // TestSecureModeIPCUsesItsOwnLocalAuthority proves that the 0600 IPC trust
 // boundary is independent from secure HTTP device authentication. The app is
-// composed with a real DeviceRegistry and no test authorizer, yet an empty
-// device identity on the local socket reaches the actual create mutation.
+// composed with a real DeviceRegistry and no test authorizer, yet the socket's
+// opaque local identity reaches the actual create mutation.
 func TestSecureModeIPCUsesItsOwnLocalAuthority(t *testing.T) {
 	dir := t.TempDir()
 	identity, err := devicetrust.LoadOrCreateHostIdentity(&devicetrust.FileKeyStore{Path: filepath.Join(dir, "host.json")})
@@ -73,7 +73,12 @@ func TestSecureModeIPCUsesItsOwnLocalAuthority(t *testing.T) {
 	if !strings.HasPrefix(response["id"], "controlled_pty:") {
 		t.Fatalf("unexpected IPC response: %v", response)
 	}
-	if _, err := app.lifecycle.Kill(context.Background(), response["id"], "", 0); err != nil {
+	identityProvider, ok := app.ipcAuthorizer.(interface{ LocalMutationIdentity() (string, uint64) })
+	if !ok {
+		t.Fatal("IPC authority does not expose its transport-scoped identity")
+	}
+	localID, localEpoch := identityProvider.LocalMutationIdentity()
+	if _, err := app.lifecycle.Kill(context.Background(), response["id"], localID, localEpoch); err != nil {
 		t.Fatalf("local IPC cleanup kill: %v", err)
 	}
 }

@@ -12,6 +12,9 @@ type testMutationAuthorizer struct{}
 func (testMutationAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
 	return nil
 }
+func (testMutationAuthorizer) AuthorizeAndCommit(_ string, _ uint64, _ devicetrust.MutationIntent, commit func() error) error {
+	return commit()
+}
 
 func testApprovalStore() *AuthoritativeApprovalStore {
 	store, err := NewApprovalStore(testMutationAuthorizer{})

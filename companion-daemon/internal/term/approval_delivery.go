@@ -45,6 +45,8 @@ const (
 	maxGateTotalQueuedBytes = 2 << 20
 )
 
+var errDeliveryInvalid = fmt.Errorf("invalid approval delivery request")
+
 type DeliveryOutcome string
 
 const (
@@ -516,67 +518,50 @@ func (g *RuntimeDeliveryGate) Accept(req ApprovalDeliveryRequest) (receipt Deliv
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if err := g.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+	err := g.authorizer.AuthorizeAndCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver, func() error {
+		// R8-A: canonical metadata validation — every variable-length field, digest
+		// format, token encoding, and ID syntax is enforced before the gate retains
+		// anything.
+		if !validGateBindingMeta(req) {
+			return errDeliveryInvalid
+		}
+		b := req.Binding
+		eid, exists := g.current[b.SessionID]
+		if !exists {
+			return errDeliveryInvalid
+		}
+		e := g.endpoints[eid]
+		if e == nil || !e.active || e.capacity == 0 {
+			return errDeliveryInvalid
+		}
+		if e.sessionID != b.SessionID || !e.runtime.equal(b.Runtime) || b.PayloadDigest != payloadDigest(req.Payload) {
+			return errDeliveryInvalid
+		}
+		if len(e.queue) >= e.capacity || len(req.Payload) > maxGateItemBytes {
+			return errDeliveryInvalid
+		}
+		totalItem := chargedItemBytes(req)
+		if totalItem > maxGateItemBytes || g.totalBytes+totalItem > maxGateTotalQueuedBytes || totalItem-len(req.Payload) > maxGateItemMetaBytes {
+			return errDeliveryInvalid
+		}
+		e.seq++
+		rid := e.nonce + "-" + strconv.Itoa(e.seq)
+		item := AcceptedDelivery{
+			Binding: cloneBinding(req.Binding), ClaimToken: strings.Clone(req.ClaimToken), ReceiptID: rid,
+			Payload: append([]byte(nil), req.Payload...),
+		}
+		e.queue = append(e.queue, item)
+		e.queuedBytes += totalItem
+		g.totalBytes += totalItem
+		receipt = DeliveryReceipt{Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
+			ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload)}
+		handle = eid
+		return nil
+	})
+	if err != nil {
 		return DeliveryReceipt{}, "", false
 	}
-	if err := g.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
-		return DeliveryReceipt{}, "", false
-	}
-
-	// R8-A: canonical metadata validation — every variable-length field, digest
-	// format, token encoding, and ID syntax is enforced before the gate retains
-	// anything.
-	if !validGateBindingMeta(req) {
-		return DeliveryReceipt{}, "", false
-	}
-	b := req.Binding
-	eid, exists := g.current[b.SessionID]
-	if !exists {
-		return DeliveryReceipt{}, "", false
-	}
-	e := g.endpoints[eid]
-	if e == nil || !e.active || e.capacity == 0 {
-		return DeliveryReceipt{}, "", false
-	}
-	if e.sessionID != b.SessionID || !e.runtime.equal(b.Runtime) {
-		return DeliveryReceipt{}, "", false
-	}
-	// The EXACT bytes being appended must match the binding's domain-separated
-	// payload digest. Substituted bytes are rejected here, NOT at commit.
-	if b.PayloadDigest != payloadDigest(req.Payload) {
-		return DeliveryReceipt{}, "", false
-	}
-	if len(e.queue) >= e.capacity {
-		return DeliveryReceipt{}, "", false
-	}
-	if len(req.Payload) > maxGateItemBytes {
-		return DeliveryReceipt{}, "", false
-	}
-	totalItem := chargedItemBytes(req) // exact retained variable bytes + fixed charge
-	if totalItem > maxGateItemBytes || g.totalBytes+totalItem > maxGateTotalQueuedBytes {
-		return DeliveryReceipt{}, "", false
-	}
-	metaBytes := totalItem - len(req.Payload)
-	if metaBytes > maxGateItemMetaBytes {
-		return DeliveryReceipt{}, "", false
-	}
-	e.seq++
-	rid := e.nonce + "-" + strconv.Itoa(e.seq)
-	// R10: the QUEUED item retains its strings for the endpoint's lifetime. Deep-clone
-	// every retained string (and defensively copy the payload) so a short but valid
-	// substring cannot pin a caller's multi-MB backing array in the bounded queue. The
-	// returned receipt is transient (not queued), so it may carry the caller's binding.
-	item := AcceptedDelivery{
-		Binding: cloneBinding(req.Binding), ClaimToken: strings.Clone(req.ClaimToken), ReceiptID: rid,
-		Payload: append([]byte(nil), req.Payload...),
-	}
-	e.queue = append(e.queue, item)
-	e.queuedBytes += totalItem
-	g.totalBytes += totalItem
-	return DeliveryReceipt{
-		Outcome: DeliveryAccepted, ClaimToken: req.ClaimToken, Binding: req.Binding,
-		ReceiptID: rid, DeliveredPayloadDigest: payloadDigest(req.Payload),
-	}, eid, true
+	return receipt, handle, true
 }
 
 // Drain returns and clears the CAPTURED endpoint's accepted items as typed defensive

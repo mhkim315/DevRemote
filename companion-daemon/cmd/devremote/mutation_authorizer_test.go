@@ -41,3 +41,9 @@ func (a *countingMutationAuthorizer) AuthorizeCommit(_ string, _ uint64, intent 
 	a.intent = intent
 	return nil
 }
+func (a *countingMutationAuthorizer) AuthorizeAndCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	if err := a.AuthorizeCommit(deviceID, epoch, intent); err != nil {
+		return err
+	}
+	return commit()
+}

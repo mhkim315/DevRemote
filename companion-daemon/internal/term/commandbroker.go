@@ -34,19 +34,13 @@ type commandBroker struct {
 func (b *commandBroker) PutAuthorized(sessionID string, command []byte, deviceID string, deviceEpoch uint64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := b.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentCmd); err != nil {
-		return err
-	}
-	// Recheck after the first successful authorization and immediately before
-	// publishing the command. This closes revoke-after-authorize TOCTOU.
-	if err := b.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentCmd); err != nil {
-		return err
-	}
-	// Copy to avoid aliasing the caller's buffer.
-	cp := make([]byte, len(command))
-	copy(cp, command)
-	b.cmds[sessionID] = cp
-	return nil
+	return b.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentCmd, func() error {
+		// Copy to avoid aliasing the caller's buffer.
+		cp := make([]byte, len(command))
+		copy(cp, command)
+		b.cmds[sessionID] = cp
+		return nil
+	})
 }
 
 func (b *commandBroker) Take(sessionID string) []byte {

@@ -731,6 +731,9 @@ type probeMutationAuthorizer struct{}
 func (probeMutationAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
 	return nil
 }
+func (probeMutationAuthorizer) AuthorizeAndCommit(_ string, _ uint64, _ devicetrust.MutationIntent, commit func() error) error {
+	return commit()
+}
 
 func fail(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)

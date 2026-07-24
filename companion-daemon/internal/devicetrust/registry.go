@@ -294,12 +294,22 @@ const (
 // Nil implementations are not permitted; constructors must reject nil.
 type MutationAuthorizer interface {
 	AuthorizeCommit(deviceID string, expectedEpoch uint64, intent MutationIntent) error
+	// AuthorizeAndCommit is the mutation linearization primitive. The
+	// authorizer validates the active device and epoch and invokes commit while
+	// holding the same authority lock. The callback must only perform the
+	// in-memory state transition for the mutation; provider, PTY, and network
+	// I/O must happen after this method returns successfully.
+	AuthorizeAndCommit(deviceID string, expectedEpoch uint64, intent MutationIntent, commit func() error) error
 }
 
-// AuthorizeCommit validates device active+epoch under the registry lock.
-func (reg *DeviceRegistry) AuthorizeCommit(deviceID string, expectedEpoch uint64, _ MutationIntent) error {
+// AuthorizeAndCommit validates and commits one mutation without exposing a
+// check/unlock/mutate gap to revocation.
+func (reg *DeviceRegistry) AuthorizeAndCommit(deviceID string, expectedEpoch uint64, _ MutationIntent, commit func() error) error {
 	if reg == nil {
 		return fmt.Errorf("%w: no device registry configured", ErrStaleDevice)
+	}
+	if commit == nil {
+		return fmt.Errorf("mutation commit callback is required")
 	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -310,7 +320,12 @@ func (reg *DeviceRegistry) AuthorizeCommit(deviceID string, expectedEpoch uint64
 	if uint64(d.Epoch) != expectedEpoch {
 		return fmt.Errorf("%w: expected %d, current %d", ErrStaleDevice, expectedEpoch, d.Epoch)
 	}
-	return nil
+	return commit()
+}
+
+// AuthorizeCommit validates device active+epoch under the registry lock.
+func (reg *DeviceRegistry) AuthorizeCommit(deviceID string, expectedEpoch uint64, intent MutationIntent) error {
+	return reg.AuthorizeAndCommit(deviceID, expectedEpoch, intent, func() error { return nil })
 }
 
 // TouchLastSeen updates lastSeenAt for an active device and persists it.

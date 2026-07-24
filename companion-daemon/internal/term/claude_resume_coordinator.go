@@ -311,7 +311,10 @@ type claudeResumeCoordinator struct {
 }
 
 func (c *claudeResumeCoordinator) authorizeEntryLocked(entry *resumeEntry, intent devicetrust.MutationIntent) bool {
-	return entry != nil && c.authorizer != nil && c.authorizer.AuthorizeCommit(entry.deviceID, entry.deviceEpoch, intent) == nil
+	if entry == nil || c.authorizer == nil {
+		return false
+	}
+	return c.authorizer.AuthorizeAndCommit(entry.deviceID, entry.deviceEpoch, intent, func() error { return nil }) == nil
 }
 
 // NewClaudeResumeCoordinator creates an empty coordinator.
@@ -531,37 +534,28 @@ func (c *claudeResumeCoordinator) ReserveEntry(claimToken string, binding Approv
 	if _, dup := c.entries[claimToken]; dup {
 		return ResumeHandle{}, false
 	}
-	if err := c.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+	var handle ResumeHandle
+	err := c.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver, func() error {
+		if len(c.entries) >= maxCoordinatorEntries {
+			return fmt.Errorf("resume coordinator capacity exhausted")
+		}
+		ch := make(chan TerminalResult, 1)
+		entry := &resumeEntry{
+			claimToken: claimToken, resumeNonce: nonce, approvalID: binding.ApprovalID,
+			sessionID: id.sessionID, toolUseID: id.toolUseID, toolName: id.toolName,
+			inputDigest: id.inputDigest, decision: decision, runtime: id.runtime,
+			pokitSessionID: binding.SessionID, binding: cloneBindingCopy(binding),
+			state: stateDecisionReserved, createdAt: clockNow(), completion: ch,
+			deviceID: deviceID, deviceEpoch: deviceEpoch,
+		}
+		c.entries[claimToken] = entry
+		handle = ResumeHandle{ClaimToken: claimToken, ResumeNonce: nonce, Completion: ch}
+		return nil
+	})
+	if err != nil {
 		return ResumeHandle{}, false
 	}
-	if err := c.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
-		return ResumeHandle{}, false
-	}
-	if len(c.entries) >= maxCoordinatorEntries {
-		return ResumeHandle{}, false
-	}
-
-	ch := make(chan TerminalResult, 1)
-	entry := &resumeEntry{
-		claimToken:     claimToken,
-		resumeNonce:    nonce,
-		approvalID:     binding.ApprovalID,
-		sessionID:      id.sessionID,
-		toolUseID:      id.toolUseID,
-		toolName:       id.toolName,
-		inputDigest:    id.inputDigest,
-		decision:       decision,
-		runtime:        id.runtime,
-		pokitSessionID: binding.SessionID,
-		binding:        cloneBindingCopy(binding),
-		state:          stateDecisionReserved,
-		createdAt:      clockNow(),
-		completion:     ch,
-		deviceID:       deviceID,
-		deviceEpoch:    deviceEpoch,
-	}
-	c.entries[claimToken] = entry
-	return ResumeHandle{ClaimToken: claimToken, ResumeNonce: nonce, Completion: ch}, true
+	return handle, true
 }
 
 // ClaimWrite transitions a reserved entry to write-claimed and returns a

@@ -26,3 +26,13 @@ func (InsecureLocalOnlyMutationAuthorizer) AuthorizeCommit(deviceID string, expe
 	}
 	return nil
 }
+
+func (a InsecureLocalOnlyMutationAuthorizer) AuthorizeAndCommit(deviceID string, expectedEpoch uint64, intent MutationIntent, commit func() error) error {
+	if err := a.AuthorizeCommit(deviceID, expectedEpoch, intent); err != nil {
+		return err
+	}
+	if commit == nil {
+		return fmt.Errorf("mutation commit callback is required")
+	}
+	return commit()
+}

@@ -78,16 +78,10 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	if o.v1Spawn == nil {
 		return "", fmt.Errorf("no V1 launcher")
 	}
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+	if err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error { return nil }); err != nil {
 		return "", err
 	}
 	canonicalID := "controlled_pty:" + cfg.Name
-	// Recheck immediately before any replacement cleanup or PTY launch. This
-	// is the create commit boundary; a denied create must not terminate an
-	// existing generation.
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
-		return "", err
-	}
 	// Retire the exact prior generation before launching a replacement. The
 	// generation check inside finalize prevents a stale cleanup from touching a
 	// later launch with the same canonical id.
@@ -230,24 +224,22 @@ func (o *OwnedPTYRuntime) terminate(ctx context.Context, id, action string, forc
 	if force {
 		intent = devicetrust.IntentSessionKill
 	}
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
-		l.Unlock()
-		return LifecycleResult{}, err
-	}
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
-		l.Unlock()
-		return LifecycleResult{}, err
-	}
 	var proceed, found, stale bool
 	var state LifecycleState
 	var h PTYHandle
 	var identity LaunchIdentity
-	if force {
-		proceed, state, found, stale, h, identity = o.requestKill(id, g)
-	} else {
-		proceed, state, found, stale, h, identity = o.beginStop(id, g)
-	}
+	err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, intent, func() error {
+		if force {
+			proceed, state, found, stale, h, identity = o.requestKill(id, g)
+		} else {
+			proceed, state, found, stale, h, identity = o.beginStop(id, g)
+		}
+		return nil
+	})
 	l.Unlock()
+	if err != nil {
+		return LifecycleResult{}, err
+	}
 	if !found {
 		return LifecycleResult{}, ErrLifecycleNotFound
 	}
@@ -342,27 +334,25 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 func (o *OwnedPTYRuntime) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
 	l := o.lockFor(id)
 	l.Lock()
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
-		l.Unlock()
-		return LifecycleResult{}, err
-	}
-	if err := o.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
-		l.Unlock()
-		return LifecycleResult{}, err
-	}
-	e, ok := o.Get(id)
-	if !ok {
-		l.Unlock()
-		return LifecycleResult{}, ErrLifecycleNotFound
-	}
-	if !e.State.Terminal() {
-		l.Unlock()
-		return LifecycleResult{}, ErrLifecycleNotTerminal
-	}
-	o.mu.Lock()
-	delete(o.entries, id)
-	o.mu.Unlock()
+	var e CatalogEntry
+	err := o.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete, func() error {
+		var ok bool
+		e, ok = o.Get(id)
+		if !ok {
+			return ErrLifecycleNotFound
+		}
+		if !e.State.Terminal() {
+			return ErrLifecycleNotTerminal
+		}
+		o.mu.Lock()
+		delete(o.entries, id)
+		o.mu.Unlock()
+		return nil
+	})
 	l.Unlock()
+	if err != nil {
+		return LifecycleResult{}, err
+	}
 	if o.transcript != nil {
 		o.transcript.ClearTranscript(id)
 	}

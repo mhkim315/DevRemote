@@ -67,3 +67,6 @@ type deniedMutationAuthorizer struct{}
 func (deniedMutationAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
 	return errTestMutationDenied
 }
+func (deniedMutationAuthorizer) AuthorizeAndCommit(string, uint64, devicetrust.MutationIntent, func() error) error {
+	return errTestMutationDenied
+}

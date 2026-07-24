@@ -24,6 +24,12 @@ func (a barrierMutationAuthorizer) AuthorizeCommit(_ string, expected uint64, _ 
 	}
 	return nil
 }
+func (a barrierMutationAuthorizer) AuthorizeAndCommit(deviceID string, expected uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	if err := a.AuthorizeCommit(deviceID, expected, intent); err != nil {
+		return err
+	}
+	return commit()
+}
 
 // TestEpochLock_ApprovalClaimBarrier proves that a successful handler-style
 // preflight does not authorize a claim after revoke: the second check runs
@@ -146,8 +152,8 @@ func TestEpochLock_PromptBarrier(t *testing.T) {
 	if err := managed.SubmitPrompt(id, 1, "blocked", principal.DeviceID, 0); err == nil {
 		t.Fatal("stale prompt was accepted")
 	}
-	if checks < 2 {
-		t.Fatalf("lock-internal epoch check calls = %d, want at least 2", checks)
+	if checks < 1 {
+		t.Fatalf("atomic prompt authorization calls = %d, want at least 1", checks)
 	}
 	if got := provider.turnCount(); got != 0 {
 		t.Fatalf("provider turn/start writes = %d, want 0", got)

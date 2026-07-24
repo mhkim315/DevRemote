@@ -154,11 +154,12 @@ type codexManagedRuntime struct {
 	// under the lock; the provider write happens after release; a failed
 	// write rolls the claim back. The pump clears the claim on turn
 	// completion or child exit.
-	turnMu      sync.Mutex
-	turnActive  bool
-	turnClosed  bool   // child exited / session stopped: no further prompts
-	currentTurn string // provider turnId bound to the active invocation ("" = none)
-	pendingReq  int64  // JSON-RPC id of the outstanding turn/start (0 = none)
+	turnMu           sync.Mutex
+	turnActive       bool
+	turnClosed       bool   // child exited / session stopped: no further prompts
+	lifecycleClaimed bool   // one lifecycle mutation owns the external process transition
+	currentTurn      string // provider turnId bound to the active invocation ("" = none)
+	pendingReq       int64  // JSON-RPC id of the outstanding turn/start (0 = none)
 	// exited is closed at the end of the pump (child EOF + MarkExited + reap
 	// started) so lifecycle operations can wait deterministically.
 	exited chan struct{}
@@ -538,17 +539,18 @@ func (rt *codexManagedRuntime) submitPrompt(text string, deviceID string, device
 		rt.turnMu.Unlock()
 		return fmt.Errorf("turn already active")
 	}
-	// This is the lock-internal prompt authorization boundary. The HTTP
-	// handler has already checked the bearer, but revoke can race that check.
-	if err := rt.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt); err != nil {
+	var id int64
+	if err := rt.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt, func() error {
+		rt.turnActive = true
+		rt.currentTurn = "" // bound below from the provider's turn/start response
+		rt.nextID++
+		id = rt.nextID
+		rt.pendingReq = id
+		return nil
+	}); err != nil {
 		rt.turnMu.Unlock()
 		return err
 	}
-	rt.turnActive = true
-	rt.currentTurn = "" // bound below from the provider's turn/start response
-	rt.nextID++
-	id := rt.nextID
-	rt.pendingReq = id
 	rt.turnMu.Unlock()
 	err := rt.send(map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "turn/start",
@@ -809,13 +811,6 @@ func (s *ManagedCodexService) SubmitPrompt(sessionID string, epoch int64, text s
 		return err
 	}
 	s.mu.Lock()
-	// Service-owned request admission is followed by the runtime turn-lock
-	// commit check in submitPrompt. Keeping both checks ensures a revoke that
-	// wins between handler admission and the mutation cannot reach the provider.
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPrompt); err != nil {
-		s.mu.Unlock()
-		return err
-	}
 	rt := s.runtimes[sessionID]
 	if rt == nil {
 		s.mu.Unlock()
@@ -859,12 +854,10 @@ func (s *ManagedCodexService) lifecycleRuntime(sessionID string, epoch int64, de
 		s.mu.Unlock()
 		return nil, fmt.Errorf("stale session epoch")
 	}
-	// 9.4-D: atomic device authorization under s.mu before returning runtime.
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
-		s.mu.Unlock()
-		return nil, err
-	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, intent, func() error {
+		rt.lifecycleClaimed = true
+		return nil
+	}); err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
@@ -964,17 +957,17 @@ func (s *ManagedCodexService) Delete(sessionID string, epoch int64, deviceID str
 		return fmt.Errorf("managed session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+	var rt *codexManagedRuntime
+	var approvals *AuthoritativeApprovalStore
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete, func() error {
+		rt = s.runtimes[sessionID]
+		delete(s.runtimes, sessionID)
+		approvals = s.approvals
+		return nil
+	}); err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	rt := s.runtimes[sessionID]
-	delete(s.runtimes, sessionID)
-	approvals := s.approvals
 	s.mu.Unlock()
 	if rt != nil && rt.events != nil {
 		rt.events.close()
@@ -1010,9 +1003,6 @@ func (s *ManagedCodexService) CreateAttached(cwd string, deviceID string, device
 }
 
 func (s *ManagedCodexService) createAuthorized(cwd string, certification bool, deviceID string, deviceEpoch uint64) (string, error) {
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
-		return "", err
-	}
 	return s.create(cwd, certification, deviceID, deviceEpoch)
 }
 
@@ -1043,7 +1033,7 @@ func (s *ManagedCodexService) create(cwd string, certification bool, deviceID st
 		s.mu.Unlock()
 		return "", fmt.Errorf("managed codex service is shutting down")
 	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error { return nil }); err != nil {
 		s.mu.Unlock()
 		return "", err
 	}

@@ -100,11 +100,7 @@ func (t *TerminalTransport) WriteInput(data []byte, deviceID string, deviceEpoch
 		t.mu.RUnlock()
 		return 0, devicetrust.ErrNoAuthority
 	}
-	if err := t.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentWSInput); err != nil {
-		t.mu.RUnlock()
-		return 0, fmt.Errorf("%w: %v", errInputAuthorization, err)
-	}
-	if err := t.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentWSInput); err != nil {
+	if err := t.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentWSInput, func() error { return nil }); err != nil {
 		t.mu.RUnlock()
 		return 0, fmt.Errorf("%w: %v", errInputAuthorization, err)
 	}
@@ -122,11 +118,7 @@ func (t *TerminalTransport) Resize(rows, cols int, deviceID string, deviceEpoch 
 		return devicetrust.ErrNoAuthority
 	}
 	if r != nil {
-		if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPTYResize); err != nil {
-			t.mu.RUnlock()
-			return err
-		}
-		if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentPTYResize); err != nil {
+		if err := authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentPTYResize, func() error { return nil }); err != nil {
 			t.mu.RUnlock()
 			return err
 		}

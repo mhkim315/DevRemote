@@ -28,14 +28,10 @@ func (r *AuthenticatedConnRegistry) Register(deviceID string, deviceEpoch uint64
 	if r.authorizer == nil {
 		return ErrNoAuthority
 	}
-	if err := r.authorizer.AuthorizeCommit(deviceID, deviceEpoch, IntentReconnect); err != nil {
-		return err
-	}
-	if err := r.authorizer.AuthorizeCommit(deviceID, deviceEpoch, IntentReconnect); err != nil {
-		return err
-	}
-	r.conns[deviceID] = append(r.conns[deviceID], closer)
-	return nil
+	return r.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, IntentReconnect, func() error {
+		r.conns[deviceID] = append(r.conns[deviceID], closer)
+		return nil
+	})
 }
 
 // Unregister removes a specific connection. Idempotent.

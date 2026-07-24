@@ -343,17 +343,14 @@ func (rt *codexManagedRuntime) deliverResponse(req ApprovalDeliveryRequest, payl
 			return fail(DeliveryRejected) // provider resolved: zero writes
 		}
 	}
-	if err := rt.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
+	if err := rt.authorizer.AuthorizeAndCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver, func() error {
+		w.state = waiterStateWriteClaimed
+		return nil
+	}); err != nil {
 		delete(rt.respWaiters, pend.idInt)
 		rt.respMu.Unlock()
 		return fail(DeliveryStaleRuntime)
 	}
-	if err := rt.authorizer.AuthorizeCommit(req.DeviceID, req.DeviceEpoch, devicetrust.IntentApprovalDeliver); err != nil {
-		delete(rt.respWaiters, pend.idInt)
-		rt.respMu.Unlock()
-		return fail(DeliveryStaleRuntime)
-	}
-	w.state = waiterStateWriteClaimed
 	rt.respMu.Unlock()
 
 	if barrier != nil {

@@ -118,6 +118,7 @@ func (s *IPCServer) Wait(ctx context.Context) error {
 
 func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorizer, telemetry *TelemetryService, lifecycle *LifecycleService, managed *ManagedCodexService, managedClaude *ManagedClaudeService) {
 	defer conn.Close()
+	localDeviceID, localDeviceEpoch := ipcMutationIdentity(authorizer)
 
 	reader := bufio.NewReader(conn)
 
@@ -189,9 +190,9 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 				var id string
 				var merr error
 				if req.Detach {
-					id, merr = managed.CreateDetached(req.CWD, req.DeviceID, req.DeviceEpoch)
+					id, merr = managed.CreateDetached(req.CWD, localDeviceID, localDeviceEpoch)
 				} else {
-					id, merr = managed.CreateAttached(req.CWD, req.DeviceID, req.DeviceEpoch)
+					id, merr = managed.CreateAttached(req.CWD, localDeviceID, localDeviceEpoch)
 				}
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
@@ -208,7 +209,7 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 					json.NewEncoder(conn).Encode(map[string]string{"error": "managed claude runtime unavailable: daemon started without --enable-managed-claude"})
 					return
 				}
-				id, merr := managedClaude.CreateDetached(req.CWD, req.DeviceID, req.DeviceEpoch)
+				id, merr := managedClaude.CreateDetached(req.CWD, localDeviceID, localDeviceEpoch)
 				if merr != nil {
 					json.NewEncoder(conn).Encode(map[string]string{"error": merr.Error()})
 				} else {
@@ -231,8 +232,8 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 				Executable:  req.Executable,
 				Args:        req.Args,
 				Command:     req.Command,
-				DeviceID:    req.DeviceID,
-				DeviceEpoch: req.DeviceEpoch,
+				DeviceID:    localDeviceID,
+				DeviceEpoch: localDeviceEpoch,
 			})
 			if cerr != nil {
 				json.NewEncoder(conn).Encode(map[string]string{"error": cerr.Error()})
@@ -245,7 +246,7 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 			// (kernel socket writes coalesce) — recover them, or early prompt
 			// lines would be silently swallowed.
 			attachReader := bufio.NewReader(io.MultiReader(dec.Buffered(), reader))
-			handleManagedAttach(conn, attachReader, managed, req.SessionID, req.Cursor, req.DeviceID, req.DeviceEpoch)
+			handleManagedAttach(conn, attachReader, managed, req.SessionID, req.Cursor, localDeviceID, localDeviceEpoch)
 			return
 		} else if req.Operation == "pair-start" {
 			handlePairOp(conn, req.Operation, req.Duration, nil)
@@ -291,7 +292,7 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 				cols, _ = strconv.Atoi(fields[1])
 				rows, _ = strconv.Atoi(fields[2])
 			}
-			handleIPCSubscriber(conn, subID, cols, rows, lifecycle, authorizer)
+			handleIPCSubscriber(conn, subID, cols, rows, lifecycle, authorizer, localDeviceID, localDeviceEpoch)
 			return
 		}
 		// Not sub: — process as first legacy header line.
@@ -341,7 +342,7 @@ func handleIPCConnection(conn net.Conn, authorizer devicetrust.MutationAuthorize
 
 // handleIPCSubscriber bridges a local terminal to an existing recorder via
 // exact-generation TerminalTransport. Other session types are unsupported.
-func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecycle *LifecycleService, authorizer devicetrust.MutationAuthorizer) {
+func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecycle *LifecycleService, authorizer devicetrust.MutationAuthorizer, deviceID string, deviceEpoch uint64) {
 	ref := sessionid.ParseSessionID(sessionID)
 
 	// Managed: route through exact-generation TerminalTransport.
@@ -362,11 +363,7 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 		}
 
 		if cols > 0 && rows > 0 {
-			if err := authorizer.AuthorizeCommit("", 0, devicetrust.IntentPTYResize); err != nil {
-				conn.Write([]byte(fmt.Sprintf("resize unauthorized: %v\n", err)))
-				return
-			}
-			if err := transport.Resize(rows, cols, "", 0); err != nil {
+			if err := transport.Resize(rows, cols, deviceID, deviceEpoch); err != nil {
 				log.Printf("IPC subscriber resize err session=%s: %v", sessionID, err)
 			}
 		}
@@ -393,14 +390,10 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 				return
 			}
 			if n > 0 {
-				if err := authorizer.AuthorizeCommit("", 0, devicetrust.IntentWSInput); err != nil {
-					log.Printf("IPC subscriber input unauthorized session=%s: %v", sessionID, err)
-					return
-				}
 				if ts != nil {
 					ts.BeginInput(sessionID, time.Now())
 				}
-				if _, err := transport.WriteInput(buf[:n], "", 0); err != nil {
+				if _, err := transport.WriteInput(buf[:n], deviceID, deviceEpoch); err != nil {
 					log.Printf("IPC subscriber input err session=%s: %v", sessionID, err)
 				}
 			}
@@ -408,4 +401,15 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 	}
 
 	conn.Write([]byte("session not found or recorder not started\n"))
+}
+
+// ipcMutationIdentity returns the opaque credential issued by production IPC
+// composition. Direct same-package tests use explicit test authorizers and
+// intentionally receive the zero identity they already pass through their
+// test services; production never enters this path without the IPC capability.
+func ipcMutationIdentity(authorizer devicetrust.MutationAuthorizer) (string, uint64) {
+	if identity, ok := authorizer.(interface{ LocalMutationIdentity() (string, uint64) }); ok {
+		return identity.LocalMutationIdentity()
+	}
+	return "", 0
 }

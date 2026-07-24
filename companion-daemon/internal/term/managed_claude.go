@@ -1075,9 +1075,6 @@ func (s *ManagedClaudeService) eventStoreFor(sessionID string) (*managedEventSto
 // CreateDetached launches a Claude managed session. The child runs in the
 // requested cwd directory.
 func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, deviceEpoch uint64) (string, error) {
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
-		return "", err
-	}
 	if err := validateCWD(cwd); err != nil {
 		return "", err
 	}
@@ -1125,11 +1122,12 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, devic
 		os.RemoveAll(hookDir)
 		return "", fmt.Errorf("managed claude service is shutting down")
 	}
-	s.gen++
-	epoch := s.gen
-	// ReserveRuntimeGeneration mutates the authoritative approval store and is
-	// therefore itself behind the service-owned create authorization boundary.
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
+	var epoch int64
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate, func() error {
+		s.gen++
+		epoch = s.gen
+		return nil
+	}); err != nil {
 		s.mu.Unlock()
 		bridge.close()
 		os.RemoveAll(hookDir)
@@ -1157,20 +1155,8 @@ func (s *ManagedClaudeService) CreateDetached(cwd string, deviceID string, devic
 	}
 
 	s.barrier("pre-spawn")
-	// The provider launch is the create side effect. Recheck after the
-	// pre-spawn pause and immediately before crossing into launcher I/O.
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		rollback()
-		return "", fmt.Errorf("managed claude service is shutting down")
-	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionCreate); err != nil {
-		s.mu.Unlock()
-		rollback()
-		return "", err
-	}
-	s.mu.Unlock()
+	// The provider launch follows the committed in-memory reservation. No
+	// authority lock is held across external process I/O.
 
 	argv := []string{
 		"--verbose",
@@ -1311,9 +1297,6 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 	if ctx == nil {
 		return nil, fmt.Errorf("managed claude resume: context is required")
 	}
-	if err := s.authorizer.AuthorizeCommit(ctx.deviceID, ctx.deviceEpoch, devicetrust.IntentApprovalResume); err != nil {
-		return nil, err
-	}
 	cwd := ctx.originalCWD
 	if cwd == "" {
 		cwd = "/tmp"
@@ -1380,16 +1363,14 @@ func (s *ManagedClaudeService) ResumeForApproval(handle ResumeHandle, ctx *resum
 		os.RemoveAll(hookDir)
 		return nil, fmt.Errorf("managed claude resume process: coordinator not available")
 	}
-	if !ctx.coordinator.BindResumeProcess(ctx.claimToken, ctx.resumeNonce, epoch) {
-		bridge.close()
-		os.RemoveAll(hookDir)
-		return nil, fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
-	}
-	// Recheck after the initial authorization and immediately before the
-	// coordinator-owned resume commit. A revoke that wins this gap must not
-	// leave a resumable process binding behind.
-	if err := s.authorizer.AuthorizeCommit(ctx.deviceID, ctx.deviceEpoch, devicetrust.IntentApprovalResume); err != nil {
-		ctx.coordinator.CancelEntry(ctx.claimToken)
+	var bound bool
+	if err := s.authorizer.AuthorizeAndCommit(ctx.deviceID, ctx.deviceEpoch, devicetrust.IntentApprovalResume, func() error {
+		bound = ctx.coordinator.BindResumeProcess(ctx.claimToken, ctx.resumeNonce, epoch)
+		if !bound {
+			return fmt.Errorf("managed claude resume process: coordinator pre-bind failed")
+		}
+		return nil
+	}); err != nil {
 		bridge.close()
 		os.RemoveAll(hookDir)
 		return nil, err
@@ -1562,7 +1543,7 @@ func (s *ManagedClaudeService) finishApprovalResume(rt *claudeManagedRuntime) {
 	if previous.atomicTerminated.Load() || s.closing || s.runtimes[rt.sessionID] != rt || rt.terminalIntent {
 		return
 	}
-	if rt.resumeCtx == nil || s.authorizer.AuthorizeCommit(rt.resumeCtx.deviceID, rt.resumeCtx.deviceEpoch, devicetrust.IntentSessionRestore) != nil {
+	if rt.resumeCtx == nil {
 		return
 	}
 	if err := s.reg.RestoreIncarnation(s.authorizer, rt.resumeCtx.deviceID, rt.resumeCtx.deviceEpoch, rt.epoch, record); err != nil {
@@ -1877,14 +1858,12 @@ func (s *ManagedClaudeService) claimTerminalIntent(
 	if rt.epoch != epoch {
 		return nil, nil, nil, fmt.Errorf("stale session epoch")
 	}
-	// 9.4-D: atomic device authorization under s.mu before state change.
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, intent, func() error {
+		rt.terminalIntent = true
+		return nil
+	}); err != nil {
 		return nil, nil, nil, err
 	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, intent); err != nil {
-		return nil, nil, nil, err
-	}
-	rt.terminalIntent = true
 	return rt, s.coordinator, s.approvals, nil
 }
 
@@ -1900,18 +1879,19 @@ func (s *ManagedClaudeService) Delete(sessionID string, epoch int64, deviceID st
 		return fmt.Errorf("managed claude session is not terminal: stop or kill it first")
 	}
 	s.mu.Lock()
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
+	var rt *claudeManagedRuntime
+	var approvals *AuthoritativeApprovalStore
+	var coord *claudeResumeCoordinator
+	if err := s.authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete, func() error {
+		rt = s.runtimes[sessionID]
+		delete(s.runtimes, sessionID)
+		approvals = s.approvals
+		coord = s.coordinator
+		return nil
+	}); err != nil {
 		s.mu.Unlock()
 		return err
 	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
-		s.mu.Unlock()
-		return err
-	}
-	rt := s.runtimes[sessionID]
-	delete(s.runtimes, sessionID)
-	approvals := s.approvals
-	coord := s.coordinator
 	s.mu.Unlock()
 	// Deferred exit preserves coordinator identities. Clean them up.
 	if rt != nil && coord != nil {

@@ -150,9 +150,6 @@ func (s *LifecycleService) deriveEpoch(id string) (ManagedSessionRecord, error) 
 
 // Stop gracefully terminates a managed session through its exact owner.
 func (s *LifecycleService) Stop(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionStop); err != nil {
-		return LifecycleResult{}, err
-	}
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err
@@ -178,9 +175,6 @@ func (s *LifecycleService) Stop(ctx context.Context, id string, deviceID string,
 
 // Kill force-terminates a managed session through its exact owner.
 func (s *LifecycleService) Kill(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionKill); err != nil {
-		return LifecycleResult{}, err
-	}
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err
@@ -207,9 +201,6 @@ func (s *LifecycleService) Kill(ctx context.Context, id string, deviceID string,
 // Delete removes an ENDED managed session through its exact owner, then
 // clears the daemon-owned history projections for exactly that canonical id.
 func (s *LifecycleService) Delete(ctx context.Context, id string, deviceID string, deviceEpoch uint64) (LifecycleResult, error) {
-	if err := s.authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionDelete); err != nil {
-		return LifecycleResult{}, err
-	}
 	owner, adapter, err := s.ownerFor(id)
 	if err != nil {
 		return LifecycleResult{}, err

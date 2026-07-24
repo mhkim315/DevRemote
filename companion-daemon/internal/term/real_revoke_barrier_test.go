@@ -43,6 +43,21 @@ func (a *realRevokeBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch uin
 	return a.reg.AuthorizeCommit(deviceID, epoch, intent)
 }
 
+func (a *realRevokeBarrierAuthorizer) AuthorizeAndCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	a.mu.Lock()
+	armed := a.armed && deviceID == a.deviceID
+	if armed {
+		a.armed = false
+		close(a.reached)
+		release := a.release
+		a.mu.Unlock()
+		<-release
+	} else {
+		a.mu.Unlock()
+	}
+	return a.reg.AuthorizeAndCommit(deviceID, epoch, intent, commit)
+}
+
 func (a *realRevokeBarrierAuthorizer) arm() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -70,9 +85,9 @@ func (a *realRevokeBarrierAuthorizer) revokeAndRelease(t *testing.T, operation f
 	return <-done
 }
 
-// postAuthRevokeBarrierAuthorizer is the complementary barrier: it delegates
-// to the real registry first, then pauses only after authorization succeeded.
-// Revoke therefore wins the gap between authorization return and sink commit.
+// postAuthRevokeBarrierAuthorizer is the complementary barrier: it pauses
+// only after the atomic authorize-and-commit primitive has returned. Revoke
+// therefore runs after the sink's exact linearization point (mutation-wins).
 type postAuthRevokeBarrierAuthorizer struct {
 	reg      *devicetrust.DeviceRegistry
 	deviceID string
@@ -81,6 +96,7 @@ type postAuthRevokeBarrierAuthorizer struct {
 	armed   bool
 	reached chan struct{}
 	release chan struct{}
+	mode    int // 1 = before atomic primitive, 2 = after atomic primitive
 }
 
 func (a *postAuthRevokeBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
@@ -100,17 +116,45 @@ func (a *postAuthRevokeBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch
 	return nil
 }
 
-func (a *postAuthRevokeBarrierAuthorizer) arm() {
+func (a *postAuthRevokeBarrierAuthorizer) AuthorizeAndCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	a.mu.Lock()
+	pre := a.armed && a.mode == 1 && deviceID == a.deviceID
+	if pre {
+		a.armed = false
+		close(a.reached)
+		release := a.release
+		a.mu.Unlock()
+		<-release
+	} else {
+		a.mu.Unlock()
+	}
+	err := a.reg.AuthorizeAndCommit(deviceID, epoch, intent, commit)
+	a.mu.Lock()
+	post := a.armed && a.mode == 2 && deviceID == a.deviceID
+	if post {
+		a.armed = false
+		close(a.reached)
+		release := a.release
+		a.mu.Unlock()
+		<-release
+	} else {
+		a.mu.Unlock()
+	}
+	return err
+}
+
+func (a *postAuthRevokeBarrierAuthorizer) arm(mode int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reached = make(chan struct{})
 	a.release = make(chan struct{})
 	a.armed = true
+	a.mode = mode
 }
 
 func (a *postAuthRevokeBarrierAuthorizer) revokeAndRelease(t *testing.T, operation func() error) error {
 	t.Helper()
-	a.arm()
+	a.arm(1)
 	done := make(chan error, 1)
 	go func() { done <- operation() }()
 	select {
@@ -129,7 +173,7 @@ func (a *postAuthRevokeBarrierAuthorizer) revokeAndRelease(t *testing.T, operati
 
 func (a *postAuthRevokeBarrierAuthorizer) releaseAfterAuthorization(t *testing.T, operation func() error) error {
 	t.Helper()
-	a.arm()
+	a.arm(2)
 	done := make(chan error, 1)
 	go func() { done <- operation() }()
 	select {

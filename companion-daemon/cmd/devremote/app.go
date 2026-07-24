@@ -122,29 +122,59 @@ var ErrMutationAuthorityNotReady = errors.New("mutation authority not ready")
 // deliberately fail-closed when unready; there is no local or empty-device
 // bypass before the trust root is available.
 type compositionMutationAuthorizer struct {
-	target devicetrust.MutationAuthorizer
-	local  devicetrust.MutationAuthorizer
+	target    devicetrust.MutationAuthorizer
+	localHTTP devicetrust.MutationAuthorizer
+	localIPC  devicetrust.MutationAuthorizer
 }
 
 func newCompositionMutationAuthorizer(target devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
-	return newCompositionMutationAuthorizerWithLocal(target, nil)
+	return newScopedCompositionMutationAuthorizer(target, nil, nil)
 }
 
-func newCompositionMutationAuthorizerWithLocal(target, local devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
+func newScopedCompositionMutationAuthorizer(target, localHTTP, localIPC devicetrust.MutationAuthorizer) (*compositionMutationAuthorizer, error) {
 	if target == nil {
 		return nil, ErrMutationAuthorityNotReady
 	}
-	return &compositionMutationAuthorizer{target: target, local: local}, nil
+	return &compositionMutationAuthorizer{target: target, localHTTP: localHTTP, localIPC: localIPC}, nil
 }
 
 func (a *compositionMutationAuthorizer) AuthorizeCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent) error {
 	if a == nil || a.target == nil {
 		return ErrMutationAuthorityNotReady
 	}
-	if deviceID == "" && epoch == 0 && a.local != nil {
-		return a.local.AuthorizeCommit(deviceID, epoch, intent)
+	if a.localIPC != nil {
+		if identity, ok := a.localIPC.(interface{ LocalMutationIdentity() (string, uint64) }); ok {
+			localID, localEpoch := identity.LocalMutationIdentity()
+			if deviceID == localID && epoch == localEpoch {
+				return a.localIPC.AuthorizeCommit(deviceID, epoch, intent)
+			}
+		}
+	}
+	if deviceID == "" && epoch == 0 && a.localHTTP != nil {
+		return a.localHTTP.AuthorizeCommit(deviceID, epoch, intent)
 	}
 	return a.target.AuthorizeCommit(deviceID, epoch, intent)
+}
+
+func (a *compositionMutationAuthorizer) AuthorizeAndCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	if a == nil || a.target == nil {
+		return ErrMutationAuthorityNotReady
+	}
+	if commit == nil {
+		return errors.New("mutation commit callback is required")
+	}
+	if a.localIPC != nil {
+		if identity, ok := a.localIPC.(interface{ LocalMutationIdentity() (string, uint64) }); ok {
+			localID, localEpoch := identity.LocalMutationIdentity()
+			if deviceID == localID && epoch == localEpoch {
+				return a.localIPC.AuthorizeAndCommit(deviceID, epoch, intent, commit)
+			}
+		}
+	}
+	if deviceID == "" && epoch == 0 && a.localHTTP != nil {
+		return a.localHTTP.AuthorizeAndCommit(deviceID, epoch, intent, commit)
+	}
+	return a.target.AuthorizeAndCommit(deviceID, epoch, intent, commit)
 }
 
 // ── tunnelProc: production tunnelResource ──
@@ -185,6 +215,7 @@ type App struct {
 	hostIdentity       *devicetrust.HostIdentity
 	deviceRegistry     *devicetrust.DeviceRegistry
 	mutationAuthorizer *compositionMutationAuthorizer
+	ipcAuthorizer      devicetrust.MutationAuthorizer
 	authHandler        *devicetrust.AuthHandler               // M2.5-3
 	sessionMgr         *devicetrust.DeviceSessionManager      // M2.5-3
 	wsTickets          *devicetrust.WSTicketStore             // M2.5-4
@@ -247,17 +278,18 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		return nil, fmt.Errorf("device mutation authorizer unavailable")
 	}
 	mutationTarget := devicetrust.MutationAuthorizer(deviceRegistry)
+	var localHTTPAuth devicetrust.MutationAuthorizer
 	if cfg.InsecureLocalOnly {
 		// Local mode has an explicit, configuration-scoped authority. It is
 		// safe only because the HTTP listener is loopback-only and the IPC
 		// socket is chmod 0600; it is never a missing-authorizer fallback.
-		mutationTarget = devicetrust.NewInsecureLocalOnlyMutationAuthorizer()
+		localHTTPAuth = devicetrust.NewInsecureLocalOnlyMutationAuthorizer()
 	}
 	if deps.mutationAuthorizer != nil {
 		mutationTarget = deps.mutationAuthorizer
 	}
-	localIPCAuth := devicetrust.NewInsecureLocalOnlyMutationAuthorizer()
-	compositionAuth, authErr := newCompositionMutationAuthorizerWithLocal(mutationTarget, localIPCAuth)
+	localIPCAuth := devicetrust.NewIPCMutationAuthorizer()
+	compositionAuth, authErr := newScopedCompositionMutationAuthorizer(mutationTarget, localHTTPAuth, localIPCAuth)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -844,6 +876,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		hostIdentity:       hostIdentity,
 		deviceRegistry:     deviceRegistry,
 		mutationAuthorizer: compositionAuth,
+		ipcAuthorizer:      localIPCAuth,
 		audit:              audit,
 		handlers:           h,
 		ipcPath:            "/tmp/pokit.sock",
@@ -1089,9 +1122,9 @@ func (a *App) startIPC() (ipcResource, error) {
 		return a.deps.StartIPC(a.ipcPath, a.telemetry, a.lifecycle)
 	}
 	// IPC is a separate 0600 local trust boundary. It never reuses the HTTP
-	// mode's device/epoch authorizer; the managed services accept the explicit
-	// empty-identity local path through their composition authorizer.
-	return term.StartIPCServer(a.ipcPath, devicetrust.NewInsecureLocalOnlyMutationAuthorizer(), a.telemetry, a.lifecycle, a.managed, a.managedClaude)
+	// mode's device/epoch authorizer; its opaque local credential is propagated
+	// through the downstream mutation services.
+	return term.StartIPCServer(a.ipcPath, a.ipcAuthorizer, a.telemetry, a.lifecycle, a.managed, a.managedClaude)
 }
 
 func (a *App) startTunnel() tunnelResource {

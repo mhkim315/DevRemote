@@ -719,71 +719,72 @@ func (s *AuthoritativeApprovalStore) ClaimForExecution(req ClaimRequest) ClaimRe
 	if rec.superseded {
 		return ClaimResult{Outcome: ClaimStaleRuntime}
 	}
-	// Approval claim authorization is evaluated by the store while its
-	// mutation lock is held, immediately before any claim transition.
-	if err := s.authorizer.AuthorizeCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim); err != nil {
+	var result ClaimResult
+	err := s.authorizer.AuthorizeAndCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim, func() error {
+		// Idempotent replay and the initial claim are part of the same atomic
+		// authority transition; revocation cannot interleave this callback.
+		if led, ok := sess.idempotency[req.IdempotencyKey]; ok {
+			if !led.binding.equal(binding) || !led.auth.equal(auth) {
+				result = ClaimResult{Outcome: ClaimConflict}
+				return nil
+			}
+			if led.accepted {
+				result = ClaimResult{Outcome: ClaimAlreadyAccepted, Binding: binding, Payload: payload}
+				return nil
+			}
+			switch rec.state {
+			case ApprovalExecuting:
+				result = ClaimResult{Outcome: ClaimAlreadyOwned}
+			case ApprovalDeliveryFailed:
+				if s.now().After(rec.expiresAt) {
+					result = ClaimResult{Outcome: ClaimExpired}
+					return nil
+				}
+				if rec.retries >= maxManualRetries {
+					result = ClaimResult{Outcome: ClaimRetryExhausted}
+					return nil
+				}
+				token := newClaimToken()
+				if token == "" {
+					result = ClaimResult{Outcome: ClaimUnauthorized}
+					return nil
+				}
+				rec.retries++
+				rec.state, rec.claimToken, rec.claimOptionID = ApprovalExecuting, token, opt.ID
+				rec.binding, rec.auth = binding, auth
+				result = ClaimResult{Outcome: ClaimGranted, Token: token, Binding: binding, Payload: payload}
+			default:
+				result = ClaimResult{Outcome: ClaimAlreadyOwned}
+			}
+			return nil
+		}
+		if rec.state == ApprovalExpired {
+			result = ClaimResult{Outcome: ClaimExpired}
+			return nil
+		}
+		if rec.state != ApprovalPending {
+			result = ClaimResult{Outcome: ClaimAlreadyOwned}
+			return nil
+		}
+		if len(sess.idempotency) >= authMaxIdempotencyKeys {
+			result = ClaimResult{Outcome: ClaimLedgerFull}
+			return nil
+		}
+		token := newClaimToken()
+		if token == "" {
+			result = ClaimResult{Outcome: ClaimUnauthorized}
+			return nil
+		}
+		rec.state, rec.claimToken, rec.claimOptionID = ApprovalExecuting, token, opt.ID
+		rec.binding, rec.auth, rec.retries = binding, auth, 0
+		sess.idempotency[req.IdempotencyKey] = idempotencyEntry{binding: binding, auth: auth, accepted: false}
+		result = ClaimResult{Outcome: ClaimGranted, Token: token, Binding: binding, Payload: payload}
+		return nil
+	})
+	if err != nil {
 		return ClaimResult{Outcome: ClaimStaleEpoch}
 	}
-	if err := s.authorizer.AuthorizeCommit(req.Requester.DeviceID, req.Requester.DeviceEpoch, devicetrust.IntentApprovalClaim); err != nil {
-		return ClaimResult{Outcome: ClaimStaleEpoch}
-	}
-
-	// Idempotent replay — only after the authority checks above passed.
-	if led, ok := sess.idempotency[req.IdempotencyKey]; ok {
-		if !led.binding.equal(binding) || !led.auth.equal(auth) {
-			return ClaimResult{Outcome: ClaimConflict}
-		}
-		if led.accepted {
-			return ClaimResult{Outcome: ClaimAlreadyAccepted, Binding: binding, Payload: payload}
-		}
-		switch rec.state {
-		case ApprovalExecuting:
-			return ClaimResult{Outcome: ClaimAlreadyOwned}
-		case ApprovalDeliveryFailed:
-			// R3-D: bounded manual retry with the SAME key/binding/auth.
-			if s.now().After(rec.expiresAt) {
-				return ClaimResult{Outcome: ClaimExpired}
-			}
-			if rec.retries >= maxManualRetries {
-				return ClaimResult{Outcome: ClaimRetryExhausted}
-			}
-			token := newClaimToken()
-			if token == "" {
-				return ClaimResult{Outcome: ClaimUnauthorized}
-			}
-			rec.retries++
-			rec.state = ApprovalExecuting
-			rec.claimToken = token
-			rec.claimOptionID = opt.ID
-			rec.binding = binding
-			rec.auth = auth
-			return ClaimResult{Outcome: ClaimGranted, Token: token, Binding: binding, Payload: payload}
-		default:
-			return ClaimResult{Outcome: ClaimAlreadyOwned}
-		}
-	}
-
-	if rec.state == ApprovalExpired {
-		return ClaimResult{Outcome: ClaimExpired}
-	}
-	if rec.state != ApprovalPending {
-		return ClaimResult{Outcome: ClaimAlreadyOwned}
-	}
-	if len(sess.idempotency) >= authMaxIdempotencyKeys {
-		return ClaimResult{Outcome: ClaimLedgerFull}
-	}
-	token := newClaimToken()
-	if token == "" {
-		return ClaimResult{Outcome: ClaimUnauthorized}
-	}
-	rec.state = ApprovalExecuting
-	rec.claimToken = token
-	rec.claimOptionID = opt.ID
-	rec.binding = binding
-	rec.auth = auth
-	rec.retries = 0
-	sess.idempotency[req.IdempotencyKey] = idempotencyEntry{binding: binding, auth: auth, accepted: false}
-	return ClaimResult{Outcome: ClaimGranted, Token: token, Binding: binding, Payload: payload}
+	return result
 }
 
 // DeliveryCommit is the result of RecordDelivery.
@@ -818,52 +819,53 @@ func (s *AuthoritativeApprovalStore) RecordDelivery(receipt DeliveryReceipt) Del
 	if receipt.ClaimToken != rec.claimToken || !b.equal(rec.binding) {
 		return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
 	}
-	// Approval commit authorization is evaluated by the store while its
-	// mutation lock is held, immediately before changing the accepted state.
-	if err := s.authorizer.AuthorizeCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit); err != nil {
-		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
-	}
-	if err := s.authorizer.AuthorizeCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit); err != nil {
-		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
-	}
-	now := s.now()
-	if rec.superseded {
-		rec.state = ApprovalDeliveryFailed
-		rec.resolvedAt = &now
-		rec.retries = maxManualRetries // superseded runtime is not retryable
-		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
-	}
-	if !IsValidDeliveryOutcome(receipt.Outcome) {
-		receipt.Outcome = DeliveryRejected
-	}
-	if deliverySucceeded(receipt.Outcome) {
-		// R3-B: the EXACT delivered bytes must match the canonical payload digest.
-		if receipt.ReceiptID == "" || receipt.DeliveredPayloadDigest != rec.binding.PayloadDigest {
+	var result DeliveryCommit
+	err := s.authorizer.AuthorizeAndCommit(rec.auth.DeviceID, rec.auth.DeviceEpoch, devicetrust.IntentApprovalCommit, func() error {
+		now := s.now()
+		if rec.superseded {
 			rec.state = ApprovalDeliveryFailed
 			rec.resolvedAt = &now
-			rec.retries = maxManualRetries // integrity failure is not retryable
-			return DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
+			rec.retries = maxManualRetries
+			result = DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
+			return nil
 		}
-		opt := findStoredOption(rec, rec.claimOptionID)
-		kind := ""
-		if opt != nil {
-			kind = opt.Kind
+		if !IsValidDeliveryOutcome(receipt.Outcome) {
+			receipt.Outcome = DeliveryRejected
 		}
-		rec.state = terminalStateForKind(kind)
+		if deliverySucceeded(receipt.Outcome) {
+			if receipt.ReceiptID == "" || receipt.DeliveredPayloadDigest != rec.binding.PayloadDigest {
+				rec.state = ApprovalDeliveryFailed
+				rec.resolvedAt = &now
+				rec.retries = maxManualRetries
+				result = DeliveryCommit{Outcome: DeliveryRejected, State: rec.state}
+				return nil
+			}
+			opt := findStoredOption(rec, rec.claimOptionID)
+			kind := ""
+			if opt != nil {
+				kind = opt.Kind
+			}
+			rec.state = terminalStateForKind(kind)
+			rec.resolvedAt = &now
+			if e, ok := sess.idempotency[rec.binding.IdempotencyKey]; ok {
+				e.accepted = true
+				sess.idempotency[rec.binding.IdempotencyKey] = e
+			}
+			result = DeliveryCommit{Outcome: receipt.Outcome, Committed: true, State: rec.state, Kind: kind}
+			return nil
+		}
+		rec.state = ApprovalDeliveryFailed
 		rec.resolvedAt = &now
-		if e, ok := sess.idempotency[rec.binding.IdempotencyKey]; ok {
-			e.accepted = true
-			sess.idempotency[rec.binding.IdempotencyKey] = e
+		if !deliveryProvesNonAcceptance(receipt.Outcome) {
+			rec.retries = maxManualRetries
 		}
-		return DeliveryCommit{Outcome: receipt.Outcome, Committed: true, State: rec.state, Kind: kind}
+		result = DeliveryCommit{Outcome: receipt.Outcome, Committed: false, State: rec.state}
+		return nil
+	})
+	if err != nil {
+		return DeliveryCommit{Outcome: DeliveryStaleRuntime, State: rec.state}
 	}
-	// Non-success. Retryable only when the outcome proves non-acceptance.
-	rec.state = ApprovalDeliveryFailed
-	rec.resolvedAt = &now
-	if !deliveryProvesNonAcceptance(receipt.Outcome) {
-		rec.retries = maxManualRetries // ambiguous → non-retryable
-	}
-	return DeliveryCommit{Outcome: receipt.Outcome, Committed: false, State: rec.state}
+	return result
 }
 
 func (s *AuthoritativeApprovalStore) List(sessionID string) []agent.AgentApproval {

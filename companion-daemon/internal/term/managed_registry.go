@@ -119,34 +119,30 @@ func (g *ManagedSessionRegistry) RegisterIncarnation(authorizer devicetrust.Muta
 	if authorizer == nil {
 		return devicetrust.ErrNoAuthority
 	}
-	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
-		return err
-	}
-	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
-		return err
-	}
-	if g.closed {
-		return fmt.Errorf("managed registry closed")
-	}
-	previous, ok := g.records[rec.SessionID]
-	if !ok {
-		return fmt.Errorf("managed session %q not found", rec.SessionID)
-	}
-	if previous.Epoch != previousEpoch {
-		return fmt.Errorf("managed session %q stale previous epoch", rec.SessionID)
-	}
-	if rec.Epoch <= previous.Epoch {
-		return fmt.Errorf("managed session %q incarnation epoch is not newer", rec.SessionID)
-	}
-	if rec.Provider != previous.Provider || rec.Version != previous.Version ||
-		rec.ProcessID == "" || rec.ProcessID == previous.ProcessID {
-		return fmt.Errorf("managed session %q incarnation identity mismatch", rec.SessionID)
-	}
-	rec.NativeStatus = ManagedStatusIdle
-	rec.StatusChangedAt = rec.CreatedAt
-	rec.Exited = false
-	g.records[rec.SessionID] = rec
-	return nil
+	return authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore, func() error {
+		if g.closed {
+			return fmt.Errorf("managed registry closed")
+		}
+		previous, ok := g.records[rec.SessionID]
+		if !ok {
+			return fmt.Errorf("managed session %q not found", rec.SessionID)
+		}
+		if previous.Epoch != previousEpoch {
+			return fmt.Errorf("managed session %q stale previous epoch", rec.SessionID)
+		}
+		if rec.Epoch <= previous.Epoch {
+			return fmt.Errorf("managed session %q incarnation epoch is not newer", rec.SessionID)
+		}
+		if rec.Provider != previous.Provider || rec.Version != previous.Version ||
+			rec.ProcessID == "" || rec.ProcessID == previous.ProcessID {
+			return fmt.Errorf("managed session %q incarnation identity mismatch", rec.SessionID)
+		}
+		rec.NativeStatus = ManagedStatusIdle
+		rec.StatusChangedAt = rec.CreatedAt
+		rec.Exited = false
+		g.records[rec.SessionID] = rec
+		return nil
+	})
 }
 
 // RestoreIncarnation restores a still-live provider runtime after a transient
@@ -160,25 +156,21 @@ func (g *ManagedSessionRegistry) RestoreIncarnation(authorizer devicetrust.Mutat
 	if authorizer == nil {
 		return devicetrust.ErrNoAuthority
 	}
-	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
-		return err
-	}
-	if err := authorizer.AuthorizeCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore); err != nil {
-		return err
-	}
-	if g.closed {
-		return fmt.Errorf("managed registry closed")
-	}
-	current, ok := g.records[rec.SessionID]
-	if !ok || current.Epoch != currentEpoch || !current.Exited {
-		return fmt.Errorf("managed session %q current incarnation is not terminal", rec.SessionID)
-	}
-	if rec.Exited || rec.Provider != current.Provider || rec.Version != current.Version ||
-		rec.ProcessID == "" || rec.ProcessID == current.ProcessID || rec.Epoch >= current.Epoch {
-		return fmt.Errorf("managed session %q restore identity mismatch", rec.SessionID)
-	}
-	g.records[rec.SessionID] = rec
-	return nil
+	return authorizer.AuthorizeAndCommit(deviceID, deviceEpoch, devicetrust.IntentSessionRestore, func() error {
+		if g.closed {
+			return fmt.Errorf("managed registry closed")
+		}
+		current, ok := g.records[rec.SessionID]
+		if !ok || current.Epoch != currentEpoch || !current.Exited {
+			return fmt.Errorf("managed session %q current incarnation is not terminal", rec.SessionID)
+		}
+		if rec.Exited || rec.Provider != current.Provider || rec.Version != current.Version ||
+			rec.ProcessID == "" || rec.ProcessID == current.ProcessID || rec.Epoch >= current.Epoch {
+			return fmt.Errorf("managed session %q restore identity mismatch", rec.SessionID)
+		}
+		g.records[rec.SessionID] = rec
+		return nil
+	})
 }
 
 // UpdateNativeStatus applies a native semantic-status transition. It is

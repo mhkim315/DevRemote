@@ -74,6 +74,9 @@ type notificationTestAuthorizer struct{}
 func (notificationTestAuthorizer) AuthorizeCommit(string, uint64, devicetrust.MutationIntent) error {
 	return nil
 }
+func (notificationTestAuthorizer) AuthorizeAndCommit(_ string, _ uint64, _ devicetrust.MutationIntent, commit func() error) error {
+	return commit()
+}
 
 type notificationBarrierAuthorizer struct {
 	reg     *devicetrust.DeviceRegistry
@@ -89,6 +92,12 @@ func (a *notificationBarrierAuthorizer) AuthorizeCommit(deviceID string, epoch u
 		}
 	}
 	return a.reg.AuthorizeCommit(deviceID, epoch, intent)
+}
+func (a *notificationBarrierAuthorizer) AuthorizeAndCommit(deviceID string, epoch uint64, intent devicetrust.MutationIntent, commit func() error) error {
+	if err := a.AuthorizeCommit(deviceID, epoch, intent); err != nil {
+		return err
+	}
+	return commit()
 }
 
 // newTestDeviceStore creates a DeviceStore with an explicit permissive test

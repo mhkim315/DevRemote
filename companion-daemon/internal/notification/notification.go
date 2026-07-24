@@ -169,15 +169,11 @@ func (s *DeviceStore) RegisterPush(deviceID, pushToken string, principalEpoch in
 func (s *DeviceStore) bind(deviceID, pushToken string, principalEpoch int64, intent devicetrust.MutationIntent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.authorizer.AuthorizeCommit(deviceID, uint64(principalEpoch), intent); err != nil {
-		return err
-	}
-	if err := s.authorizer.AuthorizeCommit(deviceID, uint64(principalEpoch), intent); err != nil {
-		return err
-	}
-	s.tokens[deviceID] = pushToken
-	s.bumpEpochLocked(deviceID)
-	return nil
+	return s.authorizer.AuthorizeAndCommit(deviceID, uint64(principalEpoch), intent, func() error {
+		s.tokens[deviceID] = pushToken
+		s.bumpEpochLocked(deviceID)
+		return nil
+	})
 }
 
 // Revoke removes the device's push token and cursor, and bumps the epoch.

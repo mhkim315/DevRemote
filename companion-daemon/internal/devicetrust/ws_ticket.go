@@ -101,37 +101,37 @@ func (s *WSTicketStore) Issue(p *Principal, hostID, sessionID string) (rawTicket
 	if s.authorizer == nil {
 		return "", time.Time{}, ErrNoAuthority
 	}
-	if err := s.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect); err != nil {
-		return "", time.Time{}, err
-	}
-	if err := s.authorizer.AuthorizeCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect); err != nil {
-		return "", time.Time{}, err
-	}
-	// Capacity check and insertion are one atomic operation. Expired entries
-	// release both global and per-device capacity before the check.
-	s.purgeExpiredLocked(now)
-	if len(s.tickets) >= s.maxTotal {
-		return "", time.Time{}, ErrWSTicketCapacity
-	}
-	devCount := 0
-	for _, t := range s.tickets {
-		if t.DeviceID == p.DeviceID {
-			devCount++
+	err = s.authorizer.AuthorizeAndCommit(p.DeviceID, uint64(p.DeviceEpoch), IntentReconnect, func() error {
+		// Capacity check and insertion are one atomic operation. Expired entries
+		// release both global and per-device capacity before the check.
+		s.purgeExpiredLocked(now)
+		if len(s.tickets) >= s.maxTotal {
+			return ErrWSTicketCapacity
 		}
-	}
-	if devCount >= s.maxPerDevice {
-		return "", time.Time{}, ErrWSTicketCapacity
-	}
-	// Defensive copy: the ticket stores an immutable permission snapshot.
-	pp := *p
-	pp.Permissions = clonePerms(p.Permissions)
-	s.tickets[digest] = &wsTicket{
-		Digest:    digest,
-		DeviceID:  p.DeviceID,
-		HostID:    hostID,
-		SessionID: sessionID,
-		Principal: &pp,
-		ExpiresAt: expiresAt,
+		devCount := 0
+		for _, t := range s.tickets {
+			if t.DeviceID == p.DeviceID {
+				devCount++
+			}
+		}
+		if devCount >= s.maxPerDevice {
+			return ErrWSTicketCapacity
+		}
+		// Defensive copy: the ticket stores an immutable permission snapshot.
+		pp := *p
+		pp.Permissions = clonePerms(p.Permissions)
+		s.tickets[digest] = &wsTicket{
+			Digest:    digest,
+			DeviceID:  p.DeviceID,
+			HostID:    hostID,
+			SessionID: sessionID,
+			Principal: &pp,
+			ExpiresAt: expiresAt,
+		}
+		return nil
+	})
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	return raw, expiresAt, nil
 }
@@ -188,22 +188,19 @@ func (s *WSTicketStore) ConsumeBound(rawTicket, expectedHostID, expectedSessionI
 		delete(s.tickets, digest)
 		return nil
 	}
-	if s.authorizer == nil || s.authorizer.AuthorizeCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect) != nil {
+	var pp Principal
+	if s.authorizer == nil || s.authorizer.AuthorizeAndCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect, func() error {
+		t.Consumed = true
+		delete(s.tickets, digest)
+		// Return a fresh copy — no shared pointers.
+		pp = *t.Principal
+		pp.Permissions = clonePerms(t.Principal.Permissions)
+		return nil
+	}) != nil {
 		t.Consumed = true
 		delete(s.tickets, digest)
 		return nil
 	}
-	if s.authorizer.AuthorizeCommit(t.DeviceID, uint64(t.Principal.DeviceEpoch), IntentReconnect) != nil {
-		t.Consumed = true
-		delete(s.tickets, digest)
-		return nil
-	}
-
-	t.Consumed = true
-	delete(s.tickets, digest)
-	// Return a fresh copy — no shared pointers.
-	pp := *t.Principal
-	pp.Permissions = clonePerms(t.Principal.Permissions)
 	return &pp
 }
 
