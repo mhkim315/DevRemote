@@ -196,9 +196,6 @@ export default function DashboardScreen({ onSelectAgent, onSnippets, token, noti
       <View style={styles.header}>
         <Text style={styles.headerTitle}>POKIT AGENTS</Text>
         <View style={{flexDirection:'row', gap:6}}>
-          <TouchableOpacity onPress={async () => { await disconnect(); }} style={[styles.snippetBtn, {borderColor: '#f85149'}]}>
-            <Text style={[styles.snippetBtnText, {color: '#f85149'}]}>↻ RESCAN</Text>
-          </TouchableOpacity>
           <TouchableOpacity onPress={onSnippets} style={styles.snippetBtn}>
             <Text style={styles.snippetBtnText}>SNIPPETS</Text>
           </TouchableOpacity>

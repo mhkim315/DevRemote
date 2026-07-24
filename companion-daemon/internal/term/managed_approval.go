@@ -43,7 +43,10 @@ const (
 	// authority version this projection is certified against (CP0 evidence,
 	// pinned @openai/codex@0.144.1). The display version string
 	// ("codex-cli 0.144.1") is never compared as authority.
-	certifiedCodexAuthorityVersion = "0.144.1"
+	// CertifiedCodexAuthorityVersion is the single frozen canonical grammar version
+	// for all production Codex paths: launch, telemetry classification, and catalog.
+	CertifiedCodexAuthorityVersion = "0.144.1"
+	certifiedCodexAuthorityVersion = CertifiedCodexAuthorityVersion // compat
 	// certifiedEnvironmentID is the exact pinned environment binding.
 	certifiedEnvironmentID = "local"
 

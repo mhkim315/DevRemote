@@ -144,7 +144,7 @@ func (h *Handlers) createFromProfile(w http.ResponseWriter, r *http.Request, req
 	if req.ProfileID == "codex" || req.ProfileID == "claude" {
 		version := ""
 		if req.ProfileID == "codex" {
-			version = "0.144.1"
+			version = CertifiedCodexAuthorityVersion
 		} else if req.ProfileID == "claude" {
 			version = CertifiedClaudeVersion
 		}

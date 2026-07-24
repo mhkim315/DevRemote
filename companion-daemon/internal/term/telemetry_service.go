@@ -163,7 +163,7 @@ func isAcceptedAdapter(kind string) bool {
 func isAcceptedVersion(kind, version string) bool {
 	switch kind {
 	case "codex":
-		return version == "0.144.1"
+		return version == CertifiedCodexAuthorityVersion
 	case "claude":
 		return version == CertifiedClaudeVersion
 	default:

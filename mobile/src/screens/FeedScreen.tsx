@@ -89,11 +89,12 @@ const NORMAL_MACROS: { label: string; chars: number[]; testID: string }[] = [
 
 
 
-// SP0.5-B: native managed sessions (codex_app_server adapter — an adapter
-// namespace branch, never agentKind inference) have NO PTY/terminal. They get
-// the dedicated bounded managed view instead of the legacy terminal screen.
+// SP0.5-B + QW5: native managed sessions (codex_app_server and claude_headless
+// adapters — adapter namespace branches, never agentKind inference) have NO
+// PTY/terminal. They get the dedicated bounded managed view instead of the
+// legacy terminal screen.
 export default function FeedScreen(props: Props) {
-  if (props.session.startsWith('codex_app_server:')) {
+  if (props.session.startsWith('codex_app_server:') || props.session.startsWith('claude_headless:')) {
     return <ManagedSessionView session={props.session} token={props.token} onBack={props.onBack} />;
   }
   return <LegacyFeedScreen {...props} />;
