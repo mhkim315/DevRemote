@@ -373,6 +373,17 @@ func handleIPCSubscriber(conn net.Conn, sessionID string, cols, rows int, lifecy
 		}
 		defer rec.Unsubscribe(subCh)
 
+		// R2: release input ownership when the IPC subscriber disconnects.
+		// Generate a stable connID so we can release only this connection.
+		ipcConnID := fmt.Sprintf("ipc-%s-%d", sessionID, time.Now().UnixNano())
+		defer transport.ReleaseInput(ipcConnID)
+		// Pre-claim with this connID so the IPC write path doesn't need to
+		// generate a new connID on every keystroke.
+		if _, claimed := transport.ClaimInput(deviceID, ipcConnID); !claimed {
+			// Another client owns input — the IPC subscriber is read-only.
+			// Defer already registered; writes will be gated by WriteInput.
+		}
+
 		go func() {
 			for data := range subCh {
 				if _, err := conn.Write(data); err != nil {

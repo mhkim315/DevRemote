@@ -100,7 +100,7 @@ export default function FeedScreen(props: Props) {
   return <LegacyFeedScreen {...props} />;
 }
 
-function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'transcript', initialSessionData, notificationNotice}: Props) {
+function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, initialTab = 'terminal', initialSessionData, notificationNotice}: Props) {
   const { tokenMgr, baseURL, termURI } = deriveTerminalAuth(authCtx, session);
   const wv = useRef<any>(null);
   const cmdRef = useRef('');
@@ -174,6 +174,8 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
     setByteStreamSuppressed(false);
     setReadOnlyReason('');
 	setCaps(Array.isArray(initialCaps) ? initialCaps : []);
+	setInputOwnerDeviceId('');
+	setIsInputOwner(false);
 	setSessionData(initialSessionData ?? null);
     transcriptMaxSeqRef.current = 0;
     lastSeenSeqRef.current = 0;
@@ -250,7 +252,11 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // readOnlyReason is display-only. It never grants or denies input.
   const [readOnlyReason, setReadOnlyReason] = useState('');
   const deviceCanInput = caps.includes('terminal:input');
-  const terminalInputEnabled = actionPolicy.inputEnabled && deviceCanInput;
+  // R2: input ownership tracking. Even with terminal:input capability,
+  // this device can only write when it owns input (or session is unowned).
+  const [inputOwnerDeviceId, setInputOwnerDeviceId] = useState('');
+  const [isInputOwner, setIsInputOwner] = useState(false);
+  const terminalInputEnabled = actionPolicy.inputEnabled && deviceCanInput && (isInputOwner || !inputOwnerDeviceId);
 
   // R1a: transcript endpoint reachability.
   const [activityError, setActivityError] = useState('');
@@ -636,6 +642,14 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           }
           connectionRef.current = nextConnection;
           setCaps(nextCaps);
+          // R2: track input ownership from the server hello frame.
+          if (data.inputOwner && typeof data.inputOwner === 'object' && typeof data.inputOwner.deviceId === 'string') {
+            setInputOwnerDeviceId(data.inputOwner.deviceId);
+            setIsInputOwner(!!data.inputOwner.isSelf);
+          } else {
+            setInputOwnerDeviceId('');
+            setIsInputOwner(false);
+          }
           setReadOnlyReason(nextCaps.includes('terminal:input') ? '' : 'Terminal input not authorized — view only');
         } else if (nextCaps !== null) {
           // A hello not bound to this screen cannot grant input.
@@ -1048,16 +1062,28 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           )}
         </View>
 
+        {/* R2: Input ownership indicator. Shows who owns input when
+            another device is the active owner. */}
+        {activeTab === 'terminal' && !sessionEnded && deviceCanInput && !isInputOwner && inputOwnerDeviceId !== '' && (
+          <View style={styles.readOnlyBar}>
+            <Text style={styles.readOnlyText}>Input owned by another device — view only</Text>
+          </View>
+        )}
         {/* Input requires both transport state and the server-authorized
-            terminal:input capability. Missing capabilities fail closed before
-            any user frame; readOnlyReason is only the explanation. */}
-        {activeTab === 'terminal' && !sessionEnded && !terminalInputEnabled && (
+            terminal:input capability. */}
+        {activeTab === 'terminal' && !sessionEnded && !deviceCanInput && (
           <View style={styles.readOnlyBar}>
             <Text style={styles.readOnlyText}>{readOnlyReason || 'View only — terminal input not authorized'}</Text>
           </View>
         )}
         {activeTab === 'terminal' && !sessionEnded && (
         <>
+        {/* R2: show input ownership status when this device is the active owner. */}
+        {isInputOwner && (
+          <View style={styles.ownerBar}>
+            <Text style={styles.ownerText}>Input: You</Text>
+          </View>
+        )}
         <View style={styles.macroContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.macroScroll}>
             {NORMAL_MACROS.map((m, i) => (
@@ -1198,6 +1224,9 @@ const styles = StyleSheet.create({
   // PB.7 Input-A: read-only indicator bar shown when terminal input is denied.
   readOnlyBar: { backgroundColor: 'rgba(42, 42, 42, 0.12)', borderTopWidth: 1, borderTopColor: '#555', paddingHorizontal: 12, paddingVertical: 8, alignItems: 'center' },
   readOnlyText: { color: '#f85149', fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
+  // R2: input ownership indicator styles.
+  ownerBar: { backgroundColor: 'rgba(69, 235, 233, 0.08)', borderTopWidth: 1, borderTopColor: '#45EBE9', paddingHorizontal: 12, paddingVertical: 6, alignItems: 'center' },
+  ownerText: { color: '#45EBE9', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
 
   activityContainer: {
     flex: 1,

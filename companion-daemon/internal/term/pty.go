@@ -317,6 +317,11 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}
 	defer conn.Close()
 
+		// R2: release input ownership when this WebSocket disconnects.
+		if inputTransport != nil {
+			defer inputTransport.ReleaseInput(connID)
+		}
+
 	if h.ConnRegistry != nil && ticketPrincipal != nil {
 		if err := h.ConnRegistry.Register(ticketPrincipal.DeviceID, uint64(ticketPrincipal.DeviceEpoch), conn); err != nil {
 			return
@@ -406,13 +411,27 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	if len(caps) == 0 && h.InsecureLocalOnly && ticketPrincipal == nil && h.authorizer.AuthorizeCommit("", 0, devicetrust.IntentWSInput) == nil {
 		caps = []string{devicetrust.PermTerminalInput}
 	}
-	permAnnounce, _ := json.Marshal(map[string]interface{}{
-		"type":         "hello",
-		"capabilities": caps,
-		"sessionId":    session,
-		"generation":   inputGeneration,
-		"connectionId": connID,
-	})
+		// R2: include input ownership info in the hello frame.
+		var inputOwner interface{}
+		if inputTransport != nil {
+			owner := inputTransport.InputOwner()
+			if owner != nil {
+				var deviceID string
+				if ticketPrincipal != nil {
+					deviceID = ticketPrincipal.DeviceID
+				}
+				owner.IsSelf = owner.DeviceID == deviceID && deviceID != ""
+				inputOwner = owner
+			}
+		}
+		permAnnounce, _ := json.Marshal(map[string]interface{}{
+			"type":         "hello",
+			"capabilities": caps,
+			"sessionId":    session,
+			"generation":   inputGeneration,
+			"connectionId": connID,
+			"inputOwner":   inputOwner,
+		})
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:
@@ -1020,4 +1039,71 @@ func newConnectionID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// R2: HandleClaimInput handles explicit input ownership transfer for
+// controlled_pty sessions. The requesting device becomes the new input
+// owner. Returns current owner info (with isSelf for the requesting device).
+func (h *Handlers) HandleClaimInput(w http.ResponseWriter, r *http.Request) {
+	session := r.PathValue("id")
+	if session == "" {
+		http.Error(w, "session id required", http.StatusBadRequest)
+		return
+	}
+
+	ref := sessionid.ParseSessionID(session)
+	if ref.Adapter != "controlled_pty" {
+		http.Error(w, "input ownership is only supported for interactive terminal sessions", http.StatusBadRequest)
+		return
+	}
+
+	if h.Lifecycle == nil || h.Lifecycle.OwnedPTY() == nil {
+		http.Error(w, "terminal runtime unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	transport, ok := h.Lifecycle.OwnedPTY().Transport(session)
+	if !ok || transport == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	p := devicetrust.PrincipalFromContext(r.Context())
+	var deviceID string
+	if p != nil {
+		deviceID = p.DeviceID
+	}
+
+	// Generate a connection ID for this claim so we can release it later
+	// if the claiming client never opens a WebSocket.
+	connID, err := newConnectionID()
+	if err != nil {
+		http.Error(w, "terminal connection unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Transfer ownership to this device.
+	owner, claimErr := transport.TransferInput("", deviceID, connID)
+	if claimErr != nil && owner != nil {
+		// Another device owns input — surface owner identity.
+		owner.IsSelf = owner.DeviceID == deviceID && deviceID != ""
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":      "input owned by another device",
+			"inputOwner": owner,
+		})
+		return
+	}
+	if claimErr != nil {
+		http.Error(w, "could not claim input ownership", http.StatusInternalServerError)
+		return
+	}
+
+	owner.IsSelf = true
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"inputOwner": owner,
+	})
 }
