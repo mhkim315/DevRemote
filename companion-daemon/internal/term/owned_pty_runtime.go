@@ -91,16 +91,17 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	}); err != nil {
 		return "", err
 	}
-	// Retire the exact prior generation before launching a replacement. The
-	// generation check inside finalize prevents a stale cleanup from touching a
-	// later launch with the same canonical id.
+	// Retire the exact prior generation before launching a replacement.
 	if previous, ok := o.currentGeneration(canonicalID); ok {
 		o.finalize(canonicalID, previous)
 	}
 	result, err := o.v1Spawn.Spawn(ctx, cfg)
 	if err != nil {
+		// Bug 2 fix: only delete own reservation.
 		o.mu.Lock()
-		delete(o.pending, canonicalID)
+		if o.pending[canonicalID] == reservedGen {
+			delete(o.pending, canonicalID)
+		}
 		o.mu.Unlock()
 		return "", err
 	}
@@ -109,7 +110,9 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 			result.ProcessCleanup.Execute(ctx)
 		}
 		o.mu.Lock()
-		delete(o.pending, canonicalID)
+		if o.pending[canonicalID] == reservedGen {
+			delete(o.pending, canonicalID)
+		}
 		o.mu.Unlock()
 		return "", fmt.Errorf("V1 launcher returned incomplete launch result")
 	}
@@ -117,15 +120,15 @@ func (o *OwnedPTYRuntime) Create(ctx context.Context, cfg SpawnConfig, profileID
 	if !ok {
 		result.ProcessCleanup.Execute(ctx)
 		o.mu.Lock()
-		delete(o.pending, canonicalID)
+		if o.pending[canonicalID] == reservedGen {
+			delete(o.pending, canonicalID)
+		}
 		o.mu.Unlock()
 		return "", fmt.Errorf("V1 handle does not expose a PTY stream")
 	}
-	// Publish only if our reservation is still current. A stale reservation
-	// means another create or revoke beat us — roll back the spawned process.
+	// Publish only if our reservation is still current.
 	o.mu.Lock()
-	current, stillCurrent := o.pending[canonicalID]
-	if !stillCurrent || current != reservedGen {
+	if o.pending[canonicalID] != reservedGen {
 		o.mu.Unlock()
 		result.ProcessCleanup.Execute(ctx)
 		return "", fmt.Errorf("create reservation overtaken")
@@ -165,11 +168,7 @@ func (o *OwnedPTYRuntime) register(id, profileID, name string, handle PTYHandle,
 func (o *OwnedPTYRuntime) registerGen(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, reservedGen int64) int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if reservedGen > 0 {
-		o.nextGen = reservedGen
-	} else {
-		o.nextGen++
-	}
+	o.nextGen++
 	g := o.nextGen
 	if old := o.entries[id]; old != nil && old.transport != nil {
 		old.transport.Retire()
@@ -178,17 +177,15 @@ func (o *OwnedPTYRuntime) registerGen(id, profileID, name string, handle PTYHand
 	o.entries[id] = &CatalogEntry{ID: id, Adapter: "controlled_pty", ProfileID: profileID, Name: name, State: LifecycleRunning, StartedAt: identity.StartedAt, Generation: g, Identity: identity, handle: handle, cleanup: cleanup, transport: transport, recorder: rec, cleanupDone: make(chan struct{})}
 	return g
 }
+
+// registerGenLocked is registerGen without acquiring o.mu (caller holds lock).
 func (o *OwnedPTYRuntime) registerGenLocked(id, profileID, name string, handle PTYHandle, identity LaunchIdentity, cleanup ownedCleanup, transport *TerminalTransport, rec *Recorder, reservedGen int64) int64 {
-	if reservedGen > 0 {
-		o.nextGen = reservedGen
-	} else {
-		o.nextGen++
-	}
-	g := o.nextGen
+	// Bug 3 fix: never move nextGen backward. Use the reserved generation directly.
+	g := reservedGen
+	transport.generation = g
 	if old := o.entries[id]; old != nil && old.transport != nil {
 		old.transport.Retire()
 	}
-	transport.generation = g
 	o.entries[id] = &CatalogEntry{ID: id, Adapter: "controlled_pty", ProfileID: profileID, Name: name, State: LifecycleRunning, StartedAt: identity.StartedAt, Generation: g, Identity: identity, handle: handle, cleanup: cleanup, transport: transport, recorder: rec, cleanupDone: make(chan struct{})}
 	return g
 }
