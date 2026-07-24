@@ -48,6 +48,10 @@ func ExtractToken(r *http.Request) string {
 
 func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" || r.Method == "PUT" {
+		if err := h.recheckEpoch(r); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		var req createSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -88,6 +92,10 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "DELETE" {
+		if err := h.recheckEpoch(r); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		id := r.URL.Query().Get("id")
 		if id != "" {
 			ref := sessionid.ParseSessionID(id)
@@ -120,6 +128,23 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Method not allowed", 405)
+}
+
+// recheckEpoch validates that the request principal's device epoch still matches
+// the authority state. Call before any mutation to guard against revocation that
+// occurred between middleware authentication and the handler commit.
+func (h *Handlers) recheckEpoch(r *http.Request) error {
+	p := devicetrust.PrincipalFromContext(r.Context())
+	return h.recheckPrincipal(p)
+}
+
+// recheckPrincipal is used by long-lived WebSocket connections whose
+// authenticated ticket principal is not stored in the HTTP request context.
+func (h *Handlers) recheckPrincipal(p *devicetrust.Principal) error {
+	if h.SessionMgr == nil {
+		return nil
+	}
+	return devicetrust.RecheckEpoch(h.SessionMgr.GetAuth, p)
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -436,7 +461,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// A frame above the raw protocol bound cannot be safely dispatched by
 			// a partial parse. Return the closed oversized result directly.
 			if len(msg) > inputMaxRawFrame {
-				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
+					return h.recheckPrincipal(ticketPrincipal)
+				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 					default:
@@ -448,7 +475,9 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 			// the partially decoded request on unknown/trailing JSON, so malformed
 			// terminal_input is rejected rather than silently ignored by dispatch.
 			if req, _, _ := parseInputControlRequest(msg); req != nil && req.Type == "terminal_input" {
-				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter); result != nil {
+				if result := handleTerminalInput(msg, session, inputGeneration, inputTransport, transcriptIfNotNil(h.Transcript), &inputSequence, ticketPrincipal, recentCache, connID, permissionLimiter, func() error {
+					return h.recheckPrincipal(ticketPrincipal)
+				}); result != nil {
 					select {
 					case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: result}:
 					default:
@@ -490,6 +519,18 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 		// the mobile can show a read-only reason instead of reporting
 		// success after silent discard.
 		if ticketPrincipal != nil && !hasTicketPerm(ticketPrincipal, devicetrust.PermTerminalInput) {
+			if time.Since(lastDenial) > time.Second {
+				select {
+				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: readOnlyDenialPayload}:
+					lastDenial = time.Now()
+				default:
+				}
+			}
+			continue
+		}
+		// A ticket remains bound to its device for the lifetime of this socket,
+		// so revoke/rebind must be checked immediately before raw input delivery.
+		if err := h.recheckPrincipal(ticketPrincipal); err != nil {
 			if time.Since(lastDenial) > time.Second {
 				select {
 				case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: readOnlyDenialPayload}:

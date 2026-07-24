@@ -3,6 +3,7 @@ package devicetrust
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -46,6 +47,31 @@ func RequirePrincipal(sessions *DeviceSessionManager, next http.HandlerFunc, req
 		ctx := context.WithValue(r.Context(), principalKey{}, p)
 		next(w, r.WithContext(ctx))
 	}
+}
+
+// RecheckEpoch validates that the Principal's device epoch matches the current
+// authority state. It is the shared guard for mutation handlers: between
+// middleware authentication and the actual commit, the device may have been
+// revoked or replaced. Callers must invoke this immediately before any
+// authority-gated side effect.
+//
+// Nil getAuth → fail-closed (ErrNoAuthority).
+// Nil principal → no-op (insecure-local path).
+func RecheckEpoch(getAuth func(deviceID string) AuthorizationState, p *Principal) error {
+	if p == nil {
+		return nil // insecure-local: no principal to recheck
+	}
+	if getAuth == nil {
+		return ErrNoAuthority
+	}
+	auth := getAuth(p.DeviceID)
+	if !auth.Active {
+		return fmt.Errorf("device is not active")
+	}
+	if auth.Epoch != uint64(p.DeviceEpoch) {
+		return fmt.Errorf("%w: principal epoch %d, current %d", ErrStaleDevice, p.DeviceEpoch, auth.Epoch)
+	}
+	return nil
 }
 
 // bearerToken extracts the raw token from an Authorization: Bearer header.

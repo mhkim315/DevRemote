@@ -30,6 +30,10 @@ func (h *Handlers) auditLifecycle(r *http.Request, action string, res LifecycleR
 
 // HandleSessionStop handles POST /api/sessions/{id}/stop.
 func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
+	if err := h.recheckEpoch(r); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if h.Lifecycle == nil {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
@@ -41,6 +45,10 @@ func (h *Handlers) HandleSessionStop(w http.ResponseWriter, r *http.Request) {
 
 // HandleSessionKill handles POST /api/sessions/{id}/kill.
 func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
+	if err := h.recheckEpoch(r); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if h.Lifecycle == nil {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return
@@ -53,6 +61,10 @@ func (h *Handlers) HandleSessionKill(w http.ResponseWriter, r *http.Request) {
 // HandleSessionDelete handles DELETE /api/sessions/{id} (path form). The legacy
 // query-form DELETE stays on HandleSessionsAPI for migration.
 func (h *Handlers) HandleSessionDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.recheckEpoch(r); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if h.Lifecycle == nil {
 		writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
 		return

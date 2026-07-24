@@ -32,6 +32,9 @@ var (
 	// ErrStale: the authorization state changed between pre-check and commit
 	// (e.g. device was revoked while a session insert was in flight).
 	ErrStale = errors.New("stale authorization state")
+	// ErrStaleDevice: the device's authorization epoch no longer matches the
+	// principal's epoch (device was revoked/replaced after bearer issuance).
+	ErrStaleDevice = errors.New("stale device epoch")
 )
 
 // writeOwnerOnly writes data to path atomically (temp + rename) with 0600
