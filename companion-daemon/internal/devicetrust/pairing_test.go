@@ -833,7 +833,7 @@ func main() {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		_, _ = lifecycle.Kill(ctx, sessionID)
+		_, _ = lifecycle.Kill(ctx, sessionID, "", 0)
 	}()
 	entry, ok := owned.Get(sessionID)
 	if !ok || entry.Generation <= 0 {
