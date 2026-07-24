@@ -48,10 +48,6 @@ func ExtractToken(r *http.Request) string {
 
 func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" || r.Method == "PUT" {
-		if err := h.recheckEpoch(r); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
 		var req createSessionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), 400)
@@ -69,6 +65,10 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 		// M1 safe create: profileId present -> daemon-owned launch. The daemon
 		// generates the canonical ID and resolves the executable by policy.
 		if req.ProfileID != "" {
+			if err := h.recheckEpoch(r); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			h.createFromProfile(w, r, req)
 			return
 		}
@@ -92,10 +92,6 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "DELETE" {
-		if err := h.recheckEpoch(r); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
 		id := r.URL.Query().Get("id")
 		if id != "" {
 			ref := sessionid.ParseSessionID(id)
@@ -111,6 +107,10 @@ func (h *Handlers) HandleSessionCRUD(w http.ResponseWriter, r *http.Request) {
 			case codexAppServerAdapter, claudeHeadlessAdapter, "controlled_pty":
 				if h.Lifecycle == nil {
 					writeLifecycleError(w, http.StatusInternalServerError, "lifecycle service unavailable")
+					return
+				}
+				if err := h.recheckEpoch(r); err != nil {
+					http.Error(w, err.Error(), http.StatusConflict)
 					return
 				}
 				res, lerr := h.Lifecycle.Delete(r.Context(), id)
