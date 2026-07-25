@@ -431,6 +431,12 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		log.Printf("WARNING: Claude interactive host disabled: %v", err)
 	}
 
+	// DS-CX2: interactive Codex TUI host (PTY + JSONL tailer).
+	codexTUI, err := term.NewCodexTUIHost("codex", ownedPTY, transcriptSvc, authorizer)
+	if err != nil {
+		log.Printf("WARNING: Codex TUI host disabled: %v", err)
+	}
+
 	// Timeline producer authorization and runtime verification are separate
 	// capabilities. The writer store starts empty; the verifier reads only the
 	// provider-owned registries populated before each post-registration start
@@ -521,6 +527,9 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 	h.ManagedClaude = managedClaude
 	if claudeInteractive != nil {
 		h.ClaudeInteractive = claudeInteractive
+	}
+	if codexTUI != nil {
+		h.CodexTUI = codexTUI
 	}
 	// A1 R3-C: the default approval delivery boundary is the generation-owned
 	// gate. No generic provider delivery channel is proven, so no sink is

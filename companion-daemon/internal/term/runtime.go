@@ -53,6 +53,9 @@ type Handlers struct {
 	// DS-CL2: interactive Claude host (PTY + hooks + JSONL). nil unless
 	// EnableClaudeInteractive.
 	ClaudeInteractive *ClaudeInteractiveHost
+	// DS-CX2: interactive Codex TUI host (PTY + JSONL tailer). nil unless
+	// wired at composition.
+	CodexTUI *CodexTUIHost
 }
 
 // NewHandlers constructs the HTTP mutation surface with its mandatory
