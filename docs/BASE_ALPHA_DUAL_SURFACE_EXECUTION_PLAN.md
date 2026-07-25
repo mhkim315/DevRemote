@@ -504,6 +504,42 @@ proposes an unsupported seam.
 **Handoff artifact:** Frozen conformance SHA, stock binary digest, command
 manifest, raw evidence references and independent verdict.
 
+### DS-CX1B — Codex Single-Client Inline Proxy Conformance
+
+**Purpose:** Prove whether a transparent single-client JSON-RPC inline proxy inserted between standard Codex TUI and `codex app-server` enables real-time dual-surface observation (PTY Terminal + structured events) for a single provider session, overcoming the multi-socket fan-out limitation of stock Codex 0.145.0 without requiring binary forks or patches.
+
+**Assumptions:** Installed stock Codex `0.145.0` binary (`/opt/homebrew/bin/codex`); standard JSON-RPC 2.0 stdio/socket IPC transport; fail-open stream tap.
+
+**Prerequisites:** DS-CX1 conformance completed (proving multi-socket fan-out limitation).
+
+**Exact write scope:**
+- a new bounded Codex inline proxy conformance test package under `companion-daemon/internal/term/dscx1b/`;
+- synthetic/probe JSON-RPC fixtures under that package's `testdata/`; and
+- one DS-CX1B evidence document under `docs/DS_CX1B_EVIDENCE.md`.
+
+No production Go file may change in this wave (probe/fixture only).
+
+**Architectural Compatibility Rules:**
+1. **Stock Binary Contract:** Must execute unmodified Homebrew Codex 0.145.0 binary over stdio or Unix socket. Zero binary modifications or source patches.
+2. **Dual-Surface Alignment:** POKIT PTY wraps TUI process for Terminal output; inline proxy taps JSON-RPC stream for Transcript/Timeline structured events.
+3. **Exact Identity:** Thread ID, turn ID, item IDs, and approval IDs must be observed directly from the single-client JSON-RPC stream without prompt correlation or timestamp synthesis.
+4. **Recorder Authority:** Recorder remains sole reader of PTY bytes. Inline proxy reads JSON-RPC IPC bytes only.
+5. **Single Process Group:** One TUI process, one app-server process (or unified process group), single session UUID.
+6. **Fail-Open Observation:** Parsing or inspection failures in the inline proxy must pass raw bytes through untouched, ensuring zero disruption to human TUI interaction.
+7. **Bounded Risk:** Low-risk, zero-mutation stdio/socket byte stream proxying.
+
+**Automated Tests:**
+- Stock binary identity and flag validation;
+- Transparent JSON-RPC 2.0 message pass-through (request/response/notification);
+- Real-time observation of `turn/started`, `item/started`, `item/*/delta`, `turn/completed` events from inline stream;
+- Observer stream tap without state mutation or message corruption;
+- Fail-open behavior on malformed or unrecognized JSON-RPC frames;
+- Clean process group teardown and socket/pipe cleanup.
+
+**Disposition:**
+- `ACCEPT/DUAL_SUPPORTED` when inline proxy proves exact live identity observation alongside PTY Terminal without breaking stock TUI operation; or
+- `ACCEPT/FALLBACK_REQUIRED` if inline proxy reveals protocol incompatibility with stock TUI IPC.
+
 ### DS-CL1 — Claude 2.1.218 exact-session side-evidence conformance
 
 **Purpose:** Prove a single POKIT-launched interactive Claude incarnation can
