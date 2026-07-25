@@ -1370,19 +1370,11 @@ func startWatcherProd() *watcher.Tailer {
 }
 
 func startTunnelProd() tunnelResource {
-	cloudflaredPath := "cloudflared"
-	exePath, err := os.Executable()
-	if err == nil {
-		dir := filepath.Dir(exePath)
-		for i := 0; i < 5; i++ {
-			p := filepath.Join(dir, "cloudflared")
-			if stat, err := os.Stat(p); err == nil && !stat.IsDir() {
-				cloudflaredPath = p
-				break
-			}
-			dir = filepath.Dir(dir)
-		}
-	}
+	cloudflaredPath := resolveCloudflaredPath()
+
+	// QW12b: idempotent restart — detect stale cloudflared from previous
+	// daemon instance and clean it up before starting a new one.
+	cleanupStaleCloudflared()
 
 	cmd := exec.Command(cloudflaredPath, "tunnel", "run", "devremote")
 	cmd.Stdout = os.Stdout
@@ -1393,6 +1385,9 @@ func startTunnelProd() tunnelResource {
 		return nil
 	}
 
+	// QW12b: record PID for idempotent restart detection.
+	writeCloudflaredPID(cmd.Process.Pid)
+
 	fmt.Println("\n===========================================")
 	fmt.Println("🚀 POKIT Daemon Started")
 	fmt.Println("===========================================")
@@ -1400,7 +1395,99 @@ func startTunnelProd() tunnelResource {
 	tp := &tunnelProc{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
+		// QW12b: cleanup PID file when tunnel exits.
+		removeCloudflaredPID()
 		close(tp.done)
 	}()
 	return tp
+}
+
+// resolveCloudflaredPath finds the cloudflared binary.
+func resolveCloudflaredPath() string {
+	path := "cloudflared"
+	exePath, err := os.Executable()
+	if err != nil {
+		return path
+	}
+	dir := filepath.Dir(exePath)
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(dir, "cloudflared")
+		if stat, err := os.Stat(p); err == nil && !stat.IsDir() {
+			return p
+		}
+		dir = filepath.Dir(dir)
+	}
+	return path
+}
+
+// cloudflaredPIDPath returns the PID file path for idempotent restart tracking.
+func cloudflaredPIDPath() string {
+	return filepath.Join(os.TempDir(), "pokit-cloudflared.pid")
+}
+
+// writeCloudflaredPID records the current tunnel PID.
+func writeCloudflaredPID(pid int) {
+	data := []byte(fmt.Sprintf("%d\n", pid))
+	os.WriteFile(cloudflaredPIDPath(), data, 0644)
+}
+
+// removeCloudflaredPID cleans up the PID file.
+func removeCloudflaredPID() {
+	os.Remove(cloudflaredPIDPath())
+}
+
+// cleanupStaleCloudflared kills a previous cloudflared instance for our
+// tunnel name, but NEVER kills unrelated processes. Only processes
+// matching the exact same tunnel "devremote" + our PID file are targeted.
+func cleanupStaleCloudflared() {
+	pidPath := cloudflaredPIDPath()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return // no PID file — first launch
+	}
+	pidStr := strings.TrimSpace(string(data))
+	if pidStr == "" {
+		return
+	}
+	pid := 0
+	fmt.Sscanf(pidStr, "%d", &pid)
+	if pid <= 1 {
+		return
+	}
+
+	// QW12b: verify the PID belongs to a cloudflared process with OUR tunnel.
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		os.Remove(pidPath)
+		return
+	}
+
+	// Check if the process is still running.
+	if err := proc.Signal(os.Signal(nil)); err != nil {
+		// Process not running — stale PID file.
+		os.Remove(pidPath)
+		return
+	}
+
+	// QW12b: verify this is actually cloudflared (not an unrelated PID reuse).
+	// On macOS, we check the process name via ps.
+	cmd := exec.Command("ps", "-p", pidStr, "-o", "comm=")
+	out, err := cmd.Output()
+	if err != nil {
+		return // can't verify — don't kill
+	}
+	name := strings.TrimSpace(string(out))
+	if !strings.Contains(name, "cloudflared") {
+		// NOT cloudflared — PID was reused by an unrelated process.
+		log.Printf("QW12b: PID %d is %q, NOT cloudflared — refusing to kill", pid, name)
+		os.Remove(pidPath) // our PID file is stale
+		return
+	}
+
+	// Safe to kill — it's our stale cloudflared from a previous run.
+	log.Printf("QW12b: killing stale cloudflared PID=%d", pid)
+	proc.Signal(os.Interrupt)
+	time.Sleep(2 * time.Second)
+	proc.Kill()
+	os.Remove(pidPath)
 }

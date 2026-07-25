@@ -59,7 +59,9 @@ const styles = StyleSheet.create({
   transcriptInputDivider: { borderBottomWidth: 1, borderBottomColor: '#444', marginVertical: 4 },
   transcriptDegradedBlock: { padding: 8, backgroundColor: 'rgba(248, 181, 0, 0.1)', borderRadius: 4, marginVertical: 2 },
   transcriptDegradedText: { color: '#d4a843', fontSize: 12 },
-  transcriptOutputBlock: { marginVertical: 2 },
+  transcriptOutputBlock: { marginVertical: 2, flex: 1, maxWidth: '100%' },
   transcriptAgentLabel: { color: '#888', fontSize: 10, marginBottom: 2 },
-  transcriptOutputText: { color: '#ccc', fontSize: 12, fontFamily: 'monospace' },
+  // UX4: responsive wrap for prose, code preserves monospace formatting.
+  // flexShrink:1 allows the text to shrink-wrap within the container bounds.
+  transcriptOutputText: { color: '#ccc', fontSize: 12, fontFamily: 'monospace', flexShrink: 1 },
 });

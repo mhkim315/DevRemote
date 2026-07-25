@@ -553,33 +553,44 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
     );
   }, [inject, deviceCanInput]);
 
-  // submitLine sends the text and Enter as TWO separate messages. Codex treats
-  // a trailing \r bundled with the text as a literal newline (paste heuristic),
-  // so combined "text\r" inserts a newline instead of submitting; a standalone
-  // \r submits — which is why the custom Enter macro ([13]) worked but Send did
-  // not. Splitting makes Send equivalent to "type text, then press Enter". The
-  // small delay keeps the \r in a separate PTY read so Codex sees a discrete
-  // Enter keypress. Text goes out once, \r once — no accumulated-buffer bug.
+  // BF-2A: session-type-aware framing. For bash (controlled_pty), text and Enter
+  // are two separate PTY writes so the shell sees a discrete Enter keypress.
+  // For agent/managed sessions (Codex, Claude TUI), text+Enter is ONE operation
+  // — the provider TUI interprets \r as submit in its own input handling.
+  const isAgentSession = props.session.startsWith('codex_app_server:') || props.session.startsWith('claude_headless:');
+
+  // submitLine sends the text and Enter. For bash sessions, text+Enter are TWO
+  // separate messages (40ms apart) so the PTY sees text bytes then \r. For agent
+  // sessions, text+\r is ONE frame — the provider TUI receives the full line.
   const submitLine = useCallback((text: string) => {
-    if (!deviceCanInput) { setSendStatus('failed'); return; }
+    if (!deviceCanInput) { setSendStatus('not_delivered'); return; }
+    // BF-2A: exactly-once guard — a pending line operation blocks duplicate taps.
     if (pendingLineRef.current) {
-      // One line operation owns the text/Enter pair; do not let an overlapping
-      // command steal its ACK slots or overwrite a partial-delivery result.
       setSendStatus('not_delivered');
       return;
     }
-    // PB.7 Input-B: 2-frame operation. Track both text+Enter ACKs.
+    // BF-2A: stale generation check — prompt must not reach an ended session.
+    if (sessionEnded || (sessionData?.lifecycleState && sessionData.lifecycleState !== 'running')) {
+      setSendStatus('failed');
+      return;
+    }
+    // Agent sessions: single-frame text+\r (provider TUI handles submit).
+    if (isAgentSession) {
+      const line: PendingLine = { operationId: `line-${++lineOperationSeqRef.current}`, sentText: text, textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: true };
+      pendingLineRef.current = line;
+      doSend(text + '\r', line.operationId, 'text');
+      return;
+    }
+    // Bash sessions: two-frame text, then Enter (preserves Codex paste heuristic fix).
     const line: PendingLine = { operationId: `line-${++lineOperationSeqRef.current}`, sentText: text, textId: null, enterId: null, textOutcome: null, enterOutcome: null, enterQueued: false };
     pendingLineRef.current = line;
     if (text) doSend(text, line.operationId, 'text');
     setTimeout(() => {
-      // A failed/timeout first frame cancels this operation; never send a
-      // delayed Enter into a later command's two-frame state.
       if (pendingLineRef.current !== line) return;
       line.enterQueued = true;
       doSend('\r', line.operationId, 'enter');
     }, 40);
-  }, [doSend, deviceCanInput]);
+  }, [doSend, deviceCanInput, sessionEnded, sessionData?.lifecycleState, isAgentSession]);
 
   const send = useCallback(() => {
     const currentCmd = cmdRef.current || cmd;
@@ -1210,7 +1221,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
           {/* E8: input delivery status indicator */}
           {sendStatus !== 'idle' && (
             <Text testID="terminal-send-status" style={[styles.sendStatus, (sendStatus === 'failed' || sendStatus === 'not_delivered' || sendStatus === 'delivery_unknown') && styles.sendFailed]}>
-              {sendStatus === 'sending' ? '↑' : sendStatus === 'socket_sent' ? 'Sent to socket' : sendStatus === 'delivered' ? 'Delivered to terminal' : sendStatus === 'delivery_unknown' ? 'Possible partial delivery' : sendStatus === 'not_delivered' ? 'Not delivered' : '✗'}
+              {sendStatus === 'sending' ? 'Sending…' : sendStatus === 'socket_sent' ? 'Sent' : sendStatus === 'delivered' ? 'Delivered' : sendStatus === 'delivery_unknown' ? 'Partial' : sendStatus === 'not_delivered' ? 'Busy' : sendStatus === 'failed' ? 'Blocked' : '✗'}
             </Text>
           )}
           <TouchableOpacity testID="terminal-send" disabled={!terminalInputEnabled} onPress={send} style={styles.btn}><Text style={styles.btnT}>Send</Text></TouchableOpacity>

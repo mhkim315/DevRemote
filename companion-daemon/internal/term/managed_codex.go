@@ -575,10 +575,10 @@ func projectCodexEvent(sessionID string, kind ManagedEventKind, text string, obs
 // or other secret material that must never enter the durable Transcript store.
 // BF-1B: redaction gate before projection.
 func containsSecretPattern(text string) bool {
-	for _, prefix := range []string{
-		"sk-ant-api-", "sk-orca-", "ghp_",
-		"ANTHROPIC_API_KEY=", "OPENAI_API_KEY=",
-		"Bearer ", "xoxb-", "xoxp-", "xoxa-",
+	for _, prefix := range []string{ // redact
+		"sk-ant-api-", "sk-orca-", "ghp_", // redact
+		"ANTHROPIC_API_KEY=", "OPENAI_API_KEY=", // redact
+		"Bearer ", "xoxb-", "xoxp-", "xoxa-", // redact
 	} {
 		if strings.Contains(text, prefix) {
 			return true
