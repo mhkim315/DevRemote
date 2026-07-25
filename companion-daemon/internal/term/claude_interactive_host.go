@@ -158,7 +158,7 @@ func (h *ClaudeInteractiveHost) Create(ctx context.Context, cwd string, deviceID
 // approvalWaiter tracks a pending mobile approval decision.
 type approvalWaiter struct {
 	approvalID string
-	sessionID   string
+	sessionID  string
 	toolName   string
 	done       chan approvalDecision
 }
@@ -197,10 +197,10 @@ func startClaudeInteractiveBridge(approvals *AuthoritativeApprovalStore) (*claud
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	bridge := &claudeInteractiveBridge{
-		token:     token,
-		hmacKey:   hmacKey,
-		port:      port,
-			waiters:   make(map[string]*approvalWaiter),
+		token:   token,
+		hmacKey: hmacKey,
+		port:    port,
+		waiters: make(map[string]*approvalWaiter),
 	}
 
 	mux := http.NewServeMux()
@@ -257,10 +257,10 @@ func (b *claudeInteractiveBridge) handlePreToolUse(w http.ResponseWriter, r *htt
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 65536))
 
 	var hook struct {
-		HookEventName string `json:"hook_event_name"`
-		ToolName      string `json:"tool_name"`
-		ToolUseID     string `json:"tool_use_id"`
-		SessionID     string `json:"session_id"`
+		HookEventName string          `json:"hook_event_name"`
+		ToolName      string          `json:"tool_name"`
+		ToolUseID     string          `json:"tool_use_id"`
+		SessionID     string          `json:"session_id"`
 		ToolInput     json.RawMessage `json:"tool_input"`
 	}
 	if json.Unmarshal(body, &hook) != nil || hook.ToolUseID == "" {
@@ -277,7 +277,7 @@ func (b *claudeInteractiveBridge) handlePreToolUse(w http.ResponseWriter, r *htt
 	// Wait for mobile decision.
 	waiter := &approvalWaiter{
 		approvalID: approvalID,
-		sessionID:   hook.SessionID,
+		sessionID:  hook.SessionID,
 		toolName:   hook.ToolName,
 		done:       make(chan approvalDecision, 1),
 	}
@@ -339,7 +339,7 @@ func (b *claudeInteractiveBridge) handlePermissionRequest(w http.ResponseWriter,
 	// DS-CLA2: Wait for mobile decision (CAS — first response wins).
 	waiter := &approvalWaiter{
 		approvalID: approvalID,
-		sessionID:   hook.SessionID,
+		sessionID:  hook.SessionID,
 		done:       make(chan approvalDecision, 1),
 	}
 
@@ -616,6 +616,10 @@ func (n *claudeJSONLNormalizer) projectLine(line []byte) {
 	}
 	for _, c := range probe.Message.Content {
 		if c.Type == "text" && c.Text != "" {
+			// BF-1B: reject secret-bearing text before projection.
+			if containsSecretPattern(c.Text) {
+				continue
+			}
 			text := transcript.BoundedText(c.Text)
 			if text == "" {
 				continue

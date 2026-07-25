@@ -72,11 +72,18 @@ func TestR4_ProjectCodexExited(t *testing.T) {
 	}
 }
 
-// TestR4_ProjectCodexGap proves ManagedEventGap → no segment (gap is internal).
+// TestR4_ProjectCodexGap proves ManagedEventGap → explicit gap segment (BF-1B).
+// Gaps must be visible in the Transcript so the UI can show gap markers.
 func TestR4_ProjectCodexGap(t *testing.T) {
-	segs := projectCodexEvent("codex_app_server:test", ManagedEventGap, "", time.Now())
-	if len(segs) != 0 {
-		t.Errorf("expected 0 segments for gap kind, got %d", len(segs))
+	segs := projectCodexEvent("codex_app_server:test", ManagedEventGap, "events dropped", time.Now())
+	if len(segs) != 1 {
+		t.Fatalf("expected 1 segment for gap kind, got %d", len(segs))
+	}
+	if segs[0].EventType != "gap" {
+		t.Errorf("expected event type gap, got %q", segs[0].EventType)
+	}
+	if segs[0].DegradedReason != "events dropped" {
+		t.Errorf("expected degraded reason 'events dropped', got %q", segs[0].DegradedReason)
 	}
 }
 

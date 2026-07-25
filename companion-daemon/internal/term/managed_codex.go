@@ -20,6 +20,7 @@ import (
 	"io"
 	"os/exec"
 	goruntime "runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -504,7 +505,13 @@ func (rt *codexManagedRuntime) appendEvent(kind ManagedEventKind, text string) {
 // R4: projectCodexEvent maps a bounded Codex ManagedEvent into TranscriptSegment
 // values for the common Transcript store. Only bounded facts cross the seam:
 // Codex JSON-RPC parsing stays Codex-owned. Returns nil for unmapped kinds.
+// BF-1B: text containing secret patterns (bearer tokens, API keys) is rejected
+// before projection — no secret enters the durable Transcript store.
 func projectCodexEvent(sessionID string, kind ManagedEventKind, text string, observedAt time.Time) []transcript.TranscriptSegment {
+	// BF-1B: reject secret-bearing text before projection.
+	if containsSecretPattern(text) {
+		return nil
+	}
 	switch kind {
 	case ManagedEventAssistant:
 		return []transcript.TranscriptSegment{{
@@ -547,9 +554,37 @@ func projectCodexEvent(sessionID string, kind ManagedEventKind, text string, obs
 			ObservedAt:      observedAt,
 			ContractVersion: transcript.ContractVersion,
 		}}
+	case ManagedEventGap:
+		return []transcript.TranscriptSegment{{
+			SessionID:       sessionID,
+			Kind:            transcript.KindAgentEvent,
+			Source:          transcript.SourceAgentEvent,
+			AgentKind:       "codex",
+			EventType:       "gap",
+			Text:            transcript.BoundedText(text),
+			DegradedReason:  transcript.BoundedText(text),
+			ObservedAt:      observedAt,
+			ContractVersion: transcript.ContractVersion,
+		}}
 	default:
 		return nil
 	}
+}
+
+// containsSecretPattern checks whether text contains bearer tokens, API keys,
+// or other secret material that must never enter the durable Transcript store.
+// BF-1B: redaction gate before projection.
+func containsSecretPattern(text string) bool {
+	for _, prefix := range []string{
+		"sk-ant-api-", "sk-orca-", "ghp_",
+		"ANTHROPIC_API_KEY=", "OPENAI_API_KEY=",
+		"Bearer ", "xoxb-", "xoxp-", "xoxa-",
+	} {
+		if strings.Contains(text, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rt *codexManagedRuntime) currentItemIdentity(params map[string]any) (string, string, bool) {
