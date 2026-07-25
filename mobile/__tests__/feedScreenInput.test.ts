@@ -184,17 +184,17 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'macro-1', part: 'text' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'accepted', sequence: 99 })));
     // A non-line macro ACK must not overwrite the line's in-flight status.
-    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    expect(statusText(tree)).not.toBe('Delivered');
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
-    expect(statusText(tree)).toBe('Sent to socket');
+    expect(statusText(tree)).toBe('Sent');
     // The text ACK is deliberately before the 40 ms Enter request. It must
     // not claim delivery while the second frame is not even pending.
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted', sequence: 1 })));
-    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    expect(statusText(tree)).not.toBe('Delivered');
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted', sequence: 2 })));
-    expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(statusText(tree)).toBe('Delivered');
     expect(tree.root.find((node: any) => node.props['data-testid'] === 'terminal-input').props.value).toBe('');
     await act(async () => tree.unmount());
     jest.useRealTimers();
@@ -217,7 +217,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID2, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(statusText(tree)).toBe('Delivered');
     expect(input().props.value).toBe('newer unsent edit');
     await act(async () => tree.unmount());
     jest.useRealTimers();
@@ -238,10 +238,10 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'line-1', part: 'enter' }) } }));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
     await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'macro-1', part: 'text' }) } }));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });
@@ -260,10 +260,10 @@ describe('FeedScreen production input authorization', () => {
       { inputId: inputID2 },
     ]) {
       await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted', ...mismatch })));
-      expect(statusText(tree)).toBe('Sent to socket');
+      expect(statusText(tree)).toBe('Sent');
     }
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(statusText(tree)).toBe('Delivered');
     await act(async () => tree.unmount());
   });
 
@@ -279,7 +279,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
     await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history', 'terminal:input'], connectionId: 'fedcba9876543210fedcba9876543210' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
-    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    expect(statusText(tree)).not.toBe('Delivered');
 
     // Start one line and make both frames pending before failing the first.
     await act(async () => input().props.onChangeText('partial'));
@@ -288,9 +288,9 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, operationId: 'line-1', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID2, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     await act(async () => webview.props.onMessage(control('input_result', { connectionId: 'fedcba9876543210fedcba9876543210', inputId: inputID3, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     expect(input().props.value).toBe('partial');
 
     // An overlapping Send cannot replace a live line operation's ACK slots.
@@ -298,7 +298,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => send().props.onPress());
     await act(async () => input().props.onChangeText('two'));
     await act(async () => send().props.onPress());
-    expect(statusText(tree)).toBe('Not delivered');
+    expect(statusText(tree)).toBe('Busy');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });
@@ -313,7 +313,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
     await act(async () => webview.props.onMessage(hello));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Delivered to terminal');
+    expect(statusText(tree)).toBe('Delivered');
     await act(async () => tree.unmount());
   });
 
@@ -327,7 +327,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => webview.props.onMessage(control('hello', { capabilities: ['history'], connectionId: 'fedcba9876543210fedcba9876543210' })));
     expect(isDisabled(tree, 'terminal-input')).toBe(true);
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
-    expect(statusText(tree)).not.toBe('Delivered to terminal');
+    expect(statusText(tree)).not.toBe('Delivered');
     await act(async () => tree.unmount());
   });
 
@@ -345,7 +345,7 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-1', part: 'text' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     expect(input().props.value).toBe('first failure');
 
     await act(async () => input().props.onChangeText('second failure'));
@@ -355,14 +355,14 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => { jest.advanceTimersByTime(40); });
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID3, operationId: 'line-2', part: 'enter' })));
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID3, outcome: 'write_failed' })));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     expect(input().props.value).toBe('second failure');
 
     await act(async () => input().props.onChangeText('timeout'));
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1, operationId: 'line-3', part: 'text' })));
     await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     expect(input().props.value).toBe('timeout');
     await act(async () => tree.unmount());
     jest.useRealTimers();
@@ -380,16 +380,16 @@ describe('FeedScreen production input authorization', () => {
     await act(async () => input().props.onChangeText('lost websocket'));
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage({ nativeEvent: { data: JSON.stringify({ type: 'delivery_unknown', operationId: 'line-1', part: 'text' }) } }));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     await act(async () => { jest.advanceTimersByTime(10000); });
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
 
     // No automatic retry occurs, and the failure releases the operation lock
     // so an explicit later Send can create the next line operation.
     await act(async () => input().props.onChangeText('later command'));
     await act(async () => send().props.onPress());
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID2, operationId: 'line-2', part: 'text' })));
-    expect(statusText(tree)).toBe('Sent to socket');
+    expect(statusText(tree)).toBe('Sent');
     await act(async () => tree.unmount());
     jest.useRealTimers();
   });
@@ -404,13 +404,13 @@ describe('FeedScreen production input authorization', () => {
 
     // Standalone input: pending → timeout → Possible partial delivery.
     await act(async () => webview.props.onMessage(control('input_pending', { inputId: inputID1 })));
-    expect(statusText(tree)).toBe('Sent to socket');
+    expect(statusText(tree)).toBe('Sent');
     await act(async () => { jest.advanceTimersByTime(3000); });
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
 
     // Late accepted result arrives — must NOT overwrite.
     await act(async () => webview.props.onMessage(control('input_result', { inputId: inputID1, outcome: 'accepted' })));
-    expect(statusText(tree)).toBe('Possible partial delivery');
+    expect(statusText(tree)).toBe('Partial');
     jest.useRealTimers();
     await act(async () => tree.unmount());
   });
@@ -568,7 +568,7 @@ describe('FeedScreen production input authorization', () => {
       await deliverNativeFrames();
       expect(nativeFrames.filter(raw => JSON.parse(raw).type === 'input_pending')).toHaveLength(2);
       expect(nativeFrames.filter(raw => JSON.parse(raw).type === 'input_result')).toHaveLength(2);
-      expect(statusText(tree)).toBe('Delivered to terminal');
+      expect(statusText(tree)).toBe('Delivered');
     } finally {
       mockWebViewInjection = null;
       try { pageSocket?.close(); } catch {}

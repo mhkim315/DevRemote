@@ -557,7 +557,7 @@ function LegacyFeedScreen({onBack, session, token, authCtx, caps: initialCaps, i
   // are two separate PTY writes so the shell sees a discrete Enter keypress.
   // For agent/managed sessions (Codex, Claude TUI), text+Enter is ONE operation
   // — the provider TUI interprets \r as submit in its own input handling.
-  const isAgentSession = props.session.startsWith('codex_app_server:') || props.session.startsWith('claude_headless:');
+  const isAgentSession = session.startsWith('codex_app_server:') || session.startsWith('claude_headless:');
 
   // submitLine sends the text and Enter. For bash sessions, text+Enter are TWO
   // separate messages (40ms apart) so the PTY sees text bytes then \r. For agent
