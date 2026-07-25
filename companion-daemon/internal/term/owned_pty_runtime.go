@@ -45,15 +45,34 @@ type OwnedPTYRuntime struct {
 	lockMu              sync.Mutex
 	locks               map[string]*sync.Mutex
 	authorizer          devicetrust.MutationAuthorizer
+	// BF-4 #11: cleanup hooks called on session delete for resources
+	// not owned by the PTY runtime (bridges, normalizers, hook dirs).
+	cleanupHooks map[string]func()
 }
 
 func NewOwnedPTYRuntime(authorizer devicetrust.MutationAuthorizer, v1 ManagedPTYLauncherV1, transcriptSvc *transcript.Service) (*OwnedPTYRuntime, error) {
 	if authorizer == nil {
 		return nil, fmt.Errorf("owned PTY mutation authorizer is required")
 	}
-	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), pending: make(map[string]int64), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer}, nil
+	return &OwnedPTYRuntime{v1Spawn: v1, transcript: transcriptSvc, graceful: 5 * time.Second, killGrace: 2 * time.Second, entries: make(map[string]*CatalogEntry), pending: make(map[string]int64), now: time.Now, locks: make(map[string]*sync.Mutex), authorizer: authorizer, cleanupHooks: make(map[string]func())}, nil
 }
 func (o *OwnedPTYRuntime) SetStatusClearer(c StatusClearer) { o.status = c }
+
+// BF-4 #11: RegisterCleanupHook adds a callback executed on session delete
+// for resources not owned by the PTY runtime (bridges, normalizers, hook dirs).
+func (o *OwnedPTYRuntime) RegisterCleanupHook(id string, hook func()) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.cleanupHooks[id] = hook
+}
+
+// UnregisterCleanupHook removes a previously registered cleanup hook.
+func (o *OwnedPTYRuntime) UnregisterCleanupHook(id string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.cleanupHooks, id)
+}
+
 func (o *OwnedPTYRuntime) Transport(id string) (*TerminalTransport, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()

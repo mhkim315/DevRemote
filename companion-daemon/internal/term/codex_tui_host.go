@@ -89,6 +89,11 @@ func (h *CodexTUIHost) Create(ctx context.Context, cwd string, deviceID string, 
 	// Start JSONL tailer for Transcript projection.
 	tailer := startCodexJSONLTailer(canonicalID, h.transcriptSvc)
 
+	// BF-4 #11: register cleanup hook for the JSONL tailer.
+	h.ownedPTY.RegisterCleanupHook(canonicalID, func() {
+		tailer.Stop()
+	})
+
 	h.mu.Lock()
 	h.runtimes[canonicalID] = &codexTUIRuntime{
 		sessionID: canonicalID,

@@ -139,6 +139,14 @@ func (h *ClaudeInteractiveHost) Create(ctx context.Context, cwd string, deviceID
 
 	normalizer := startClaudeJSONLNormalizer(canonicalID, claudeUUID, h.transcriptSvc)
 
+	// BF-4 #11: register cleanup hook so Delete stops the bridge,
+	// normalizer, and removes the hook directory.
+	h.ownedPTY.RegisterCleanupHook(canonicalID, func() {
+		bridge.stop()
+		normalizer.Stop()
+		os.RemoveAll(hookDir)
+	})
+
 	h.mu.Lock()
 	h.runtimes[canonicalID] = &claudeInteractiveRuntime{
 		sessionID:       canonicalID,
