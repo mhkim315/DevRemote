@@ -198,7 +198,7 @@ func TestBF1B_CodexTranscriptHook_Integration(t *testing.T) {
 // BF-1B: Redaction.
 func TestBF1B_Redaction_SecretPatternsBlocked(t *testing.T) {
 	secrets := []string{
-		"Bearer sk-ant-api-1234567890abcdef",     // redact
+		"Bearer sk-ant-api-1234567890abcdef",      // redact
 		"ANTHROPIC_API_KEY=sk-ant-api-secret",     // redact
 		"OPENAI_API_KEY=sk-orca-1234567890abcdef", // redact
 		"ghp_1234567890abcdef1234567890abcdef",    // redact

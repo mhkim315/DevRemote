@@ -156,9 +156,9 @@ func TestUUIDGeneration(t *testing.T) {
 
 	invalid := []string{
 		"not-a-uuid",
-		"00000000-0000-0000-0000-00000000000", // too short
+		"00000000-0000-0000-0000-00000000000",   // too short
 		"00000000-0000-0000-0000-0000000000001", // too long
-		"gggggggg-gggg-gggg-gggg-gggggggggggg", // invalid hex
+		"gggggggg-gggg-gggg-gggg-gggggggggggg",  // invalid hex
 		"",
 		"/etc/passwd",
 		"../../../tmp/escape",

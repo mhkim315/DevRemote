@@ -20,10 +20,10 @@ var ErrInputNotOwner = errors.New("terminal input not owner")
 // DeviceID is empty when there is no owner (unowned). IsSelf is always false
 // in the server-side struct; callers set it per-connection.
 type InputOwnerInfo struct {
-	DeviceID  string `json:"deviceId,omitempty"`
-	ConnID    string `json:"-"`
-	IsSelf    bool   `json:"isSelf"`
-	Since     int64  `json:"since,omitempty"` // unix nanos
+	DeviceID string `json:"deviceId,omitempty"`
+	ConnID   string `json:"-"`
+	IsSelf   bool   `json:"isSelf"`
+	Since    int64  `json:"since,omitempty"` // unix nanos
 }
 
 // DefaultInputOwnerTimeout is the inactivity duration after which input

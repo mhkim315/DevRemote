@@ -414,6 +414,7 @@ func (o *OwnedPTYRuntime) finalize(id string, g int64) {
 		}
 	}
 }
+
 // DS-ARB4: Interrupt sends SIGINT to the PTY process group. Requires
 // interrupt permission but NOT input-writer ownership. Idempotent.
 func (o *OwnedPTYRuntime) Interrupt(id string, deviceID string, deviceEpoch uint64) error {

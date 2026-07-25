@@ -317,10 +317,10 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	}
 	defer conn.Close()
 
-		// R2: release input ownership when this WebSocket disconnects.
-		if inputTransport != nil {
-			defer inputTransport.ReleaseInput(connID)
-		}
+	// R2: release input ownership when this WebSocket disconnects.
+	if inputTransport != nil {
+		defer inputTransport.ReleaseInput(connID)
+	}
 
 	if h.ConnRegistry != nil && ticketPrincipal != nil {
 		if err := h.ConnRegistry.Register(ticketPrincipal.DeviceID, uint64(ticketPrincipal.DeviceEpoch), conn); err != nil {
@@ -411,27 +411,27 @@ func (h *Handlers) handleWSWithPrincipal(w http.ResponseWriter, r *http.Request,
 	if len(caps) == 0 && h.InsecureLocalOnly && ticketPrincipal == nil && h.authorizer.AuthorizeCommit("", 0, devicetrust.IntentWSInput) == nil {
 		caps = []string{devicetrust.PermTerminalInput}
 	}
-		// R2: include input ownership info in the hello frame.
-		var inputOwner interface{}
-		if inputTransport != nil {
-			owner := inputTransport.InputOwner()
-			if owner != nil {
-				var deviceID string
-				if ticketPrincipal != nil {
-					deviceID = ticketPrincipal.DeviceID
-				}
-				owner.IsSelf = owner.DeviceID == deviceID && deviceID != ""
-				inputOwner = owner
+	// R2: include input ownership info in the hello frame.
+	var inputOwner interface{}
+	if inputTransport != nil {
+		owner := inputTransport.InputOwner()
+		if owner != nil {
+			var deviceID string
+			if ticketPrincipal != nil {
+				deviceID = ticketPrincipal.DeviceID
 			}
+			owner.IsSelf = owner.DeviceID == deviceID && deviceID != ""
+			inputOwner = owner
 		}
-		permAnnounce, _ := json.Marshal(map[string]interface{}{
-			"type":         "hello",
-			"capabilities": caps,
-			"sessionId":    session,
-			"generation":   inputGeneration,
-			"connectionId": connID,
-			"inputOwner":   inputOwner,
-		})
+	}
+	permAnnounce, _ := json.Marshal(map[string]interface{}{
+		"type":         "hello",
+		"capabilities": caps,
+		"sessionId":    session,
+		"generation":   inputGeneration,
+		"connectionId": connID,
+		"inputOwner":   inputOwner,
+	})
 	select {
 	case outbound <- wsOutbound{messageType: websocket.TextMessage, payload: permAnnounce}:
 	default:

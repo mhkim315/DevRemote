@@ -180,8 +180,8 @@ func TestDS_CX1_AppServerStdioHandshake(t *testing.T) {
 		ID     int `json:"id"`
 		Result struct {
 			Thread struct {
-				ID        string `json:"id"`
-				SessionID string `json:"sessionId"`
+				ID         string `json:"id"`
+				SessionID  string `json:"sessionId"`
 				CLIVersion string `json:"cliVersion"`
 			} `json:"thread"`
 		} `json:"result"`
