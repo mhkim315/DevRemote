@@ -426,6 +426,7 @@ func NewAppWithDeps(cfg Config, deps Dependencies) (app *App, err error) {
 		ownedPTY,
 		transcriptSvc,
 		authorizer,
+		approvals,
 	)
 	if err != nil {
 		log.Printf("WARNING: Claude interactive host disabled: %v", err)

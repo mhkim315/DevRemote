@@ -46,7 +46,7 @@ func TestDS_CL2_HookSettingsGeneration(t *testing.T) {
 	token := "test-token-abc123"
 	port := 12345
 
-	if err := writeInteractiveHookSettings(dir, token, port); err != nil {
+	if err := writeInteractiveHookSettings(dir, token, port, "test-nonce-abc"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,7 +223,7 @@ func TestDS_CL2_InteractiveHost_NewHost(t *testing.T) {
 
 	host, err := NewClaudeInteractiveHost(
 		ClaudeInteractiveConfig{Bin: "claude", Version: "2.1.219", AuthorityVersion: "2.1.219"},
-		ownedPTY, svc, authorizer,
+		ownedPTY, svc, authorizer, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +255,7 @@ func TestDS_CL2_FindJSONL(t *testing.T) {
 
 // TestDS_CL2_InteractiveBridgeStartStop proves the hook bridge can start and stop.
 func TestDS_CL2_InteractiveBridgeStartStop(t *testing.T) {
-	bridge, err := startClaudeInteractiveBridge()
+	bridge, err := startClaudeInteractiveBridge(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
