@@ -423,6 +423,27 @@ func (b *claudeInteractiveBridge) handleDecision(w http.ResponseWriter, r *http.
 // ── Hook Settings ──
 
 func writeInteractiveHookSettings(hookDir, token string, port int, nonce string) error {
+	// BF-1A B10: validate hookDir exists and is a real directory (no symlinks).
+	info, err := os.Lstat(hookDir)
+	if err != nil {
+		return fmt.Errorf("hook dir stat: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("hook dir is a symlink: %s", hookDir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("hook dir is not a directory: %s (mode=%s)", hookDir, info.Mode())
+	}
+
+	target := filepath.Join(hookDir, "settings.json")
+
+	// Reject if target already exists (symlink check).
+	if existing, err := os.Lstat(target); err == nil {
+		if existing.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("settings file is a symlink: %s", target)
+		}
+	}
+
 	url := fmt.Sprintf("http://127.0.0.1:%d/hook", port)
 	permURL := fmt.Sprintf("http://127.0.0.1:%d/permission", port)
 	settings := map[string]any{
@@ -454,7 +475,34 @@ func writeInteractiveHookSettings(hookDir, token string, port int, nonce string)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(hookDir, "settings.json"), data, 0600)
+
+	// BF-1A B10: atomic write — write to temp file, then rename.
+	tmpFile, err := os.CreateTemp(hookDir, ".tmp-settings-*")
+	if err != nil {
+		return fmt.Errorf("create temp settings: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath) // cleanup temp if rename fails
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("write settings: %w", err)
+	}
+	if err := tmpFile.Chmod(0600); err != nil {
+		return fmt.Errorf("chmod settings: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close settings: %w", err)
+	}
+
+	// Atomic rename (same filesystem, so it's atomic on Unix).
+	if err := os.Rename(tmpPath, target); err != nil {
+		return fmt.Errorf("rename settings: %w", err)
+	}
+
+	return nil
 }
 
 // ── Session UUID ──
